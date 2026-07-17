@@ -1,22 +1,13 @@
 import { z } from "zod";
 
 export const registerSchema = z.object({
-  name: z
-    .string()
-    .min(2, "Name must be at least 2 characters")
-    .max(50),
+  companyName: z.string().min(2).max(100),
 
-  email: z
-    .string()
-    .email("Invalid email address"),
+  name: z.string().min(2).max(50),
 
-  password: z
-    .string()
-    .min(8, "Password must be at least 8 characters"),
+  email: z.string().email(),
 
-  companyId: z.string().cuid(),
-
-  role: z.enum(["ADMIN", "MANAGER", "VIEWER"]),
+  password: z.string().min(8),
 });
 
 export const loginSchema = z.object({

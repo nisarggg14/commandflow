@@ -31,11 +31,13 @@ enum ActivityStatus {
 }
 
 model Company {
-  id        String   @id @default(cuid())
-  name      String
-  industry  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  industry    String?
+  logo        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   users         User[]
   applications  Application[]
