@@ -6,12 +6,12 @@ interface EmptyStateProps {
 
 export function EmptyState({ onSuggestionClick }: EmptyStateProps) {
   const suggestions = [
-    'Show low stock products',
-    'Generate today&apos;s sales report',
-    'Increase Nike stock',
-    'Create purchase order',
-    'Analyze inventory trends',
-    'Open Inventory System',
+    'Show products',
+    'Update stock',
+    'Reduce prices',
+    'Show pending orders',
+    'Disable employee',
+    'List applications',
   ]
 
   return (

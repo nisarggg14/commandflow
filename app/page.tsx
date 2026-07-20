@@ -7,6 +7,7 @@ import { TopBar } from '@/components/top-bar'
 import { ChatInput } from '@/components/chat-input'
 import { MessageBubble } from '@/components/message-bubble'
 import { EmptyState } from '@/components/empty-state'
+import { CommandExecutionCard, type CommandExecutionPayload } from '@/components/command-execution-card'
 
 interface Message {
   id: string
@@ -18,6 +19,15 @@ interface Conversation {
   id: string
   title: string
   messages: Message[]
+}
+
+function parseExecutionPayload(content: string): CommandExecutionPayload | null {
+  try {
+    const parsed = JSON.parse(content) as CommandExecutionPayload
+    return parsed && typeof parsed === 'object' && 'type' in parsed ? parsed : null
+  } catch {
+    return null
+  }
 }
 
 export default function Page() {
@@ -148,54 +158,71 @@ export default function Page() {
   const handleSuggestionClick = (suggestion: string) => {
     handleSendMessage(suggestion)
   }
+
   return (
-  <div className="flex h-screen overflow-hidden bg-background">
-    <ChatSidebar
-      isOpen={sidebarOpen}
-      onToggle={() => setSidebarOpen(!sidebarOpen)}
-      conversations={conversations}
-      activeConversationId={activeConversationId}
-      onSelectConversation={handleSelectConversation}
-      onNewChat={handleNewChat}
-    />
-
-    <div className="flex flex-col flex-1 w-full md:w-0">
-      <TopBar title={activeConversation?.title || 'CommandFlow'} />
-
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-4xl mx-auto px-4 md:px-6 py-8">
-          {!activeConversation ||
-          activeConversation.messages.length === 0 ? (
-            <EmptyState onSuggestionClick={handleSuggestionClick} />
-          ) : (
-            <div className="space-y-6">
-              {activeConversation.messages.map((msg) => (
-                <MessageBubble
-                  key={msg.id}
-                  role={msg.role}
-                  content={msg.content}
-                />
-              ))}
-
-              {isLoading && (
-                <MessageBubble
-                  role="assistant"
-                  content=""
-                  isLoading={true}
-                />
-              )}
-            </div>
-          )}
-
-          <div ref={messagesEndRef} />
-        </div>
-      </div>
-
-      <ChatInput
-        onSubmit={handleSendMessage}
-        isLoading={isLoading}
+    <div className="flex h-screen overflow-hidden bg-background">
+      <ChatSidebar
+        isOpen={sidebarOpen}
+        onToggle={() => setSidebarOpen(!sidebarOpen)}
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        onSelectConversation={handleSelectConversation}
+        onNewChat={handleNewChat}
       />
+
+      <div className="flex flex-col flex-1 w-full md:w-0">
+        <TopBar title={activeConversation?.title || 'CommandFlow'} />
+
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-4xl mx-auto px-4 md:px-6 py-8">
+            {!activeConversation ||
+            activeConversation.messages.length === 0 ? (
+              <EmptyState onSuggestionClick={handleSuggestionClick} />
+            ) : (
+              <div className="space-y-6">
+                {activeConversation.messages.map((msg) => {
+                  if (msg.role === 'assistant') {
+                    const payload = parseExecutionPayload(msg.content)
+
+                    if (payload) {
+                      return (
+                        <div key={msg.id} className="flex justify-start">
+                          <div className="w-full max-w-3xl">
+                            <CommandExecutionCard payload={payload} />
+                          </div>
+                        </div>
+                      )
+                    }
+                  }
+
+                  return (
+                    <MessageBubble
+                      key={msg.id}
+                      role={msg.role}
+                      content={msg.content}
+                    />
+                  )
+                })}
+
+                {isLoading && (
+                  <MessageBubble
+                    role="assistant"
+                    content=""
+                    isLoading={true}
+                  />
+                )}
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+        </div>
+
+        <ChatInput
+          onSubmit={handleSendMessage}
+          isLoading={isLoading}
+        />
+      </div>
     </div>
-  </div>
-)
+  )
 }
