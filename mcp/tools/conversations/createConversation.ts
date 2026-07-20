@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { Permission, ToolCategory, type MCPContext, type MCPTool } from "../../types";
+import { Permission, ToolCategory, type MCPTool } from "../../types";
 
 export function createCreateConversationTool(): MCPTool {
   return {
-    name: "createConversation",
+    name: "conversations.createConversation",
     description: "Create a conversation record for the authenticated user and company.",
     category: ToolCategory.CONVERSATIONS,
     permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],

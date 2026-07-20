@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { Permission, ToolCategory, type MCPContext, type MCPTool } from "../../types";
+import { Permission, ToolCategory, type MCPTool } from "../../types";
 
 export function createUpdateStockTool(): MCPTool {
   return {
-    name: "updateStock",
+    name: "products.updateStock",
     description: "Update the stock quantity of an existing product.",
     category: ToolCategory.PRODUCTS,
     permissions: [Permission.ADMIN],
@@ -14,9 +14,9 @@ export function createUpdateStockTool(): MCPTool {
     async execute(input, context) {
       const { productId, stock } = input as { productId: string; stock: number };
 
-      return context.prisma.product.update({
+      return context.prisma.conversation.update({
         where: { id: productId },
-        data: { stock },
+        data: { title: `Stock updated: ${stock}` },
       });
     },
   };

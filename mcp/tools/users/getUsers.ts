@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { Permission, ToolCategory, type MCPContext, type MCPTool } from "../../types";
+import { Permission, ToolCategory, type MCPTool } from "../../types";
 
 export function createGetUsersTool(): MCPTool {
   return {
-    name: "getUsers",
+    name: "users.getUsers",
     description: "Retrieve users for the authenticated company.",
     category: ToolCategory.USERS,
     permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],

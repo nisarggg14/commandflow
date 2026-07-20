@@ -7,7 +7,7 @@ interface CreateMcpContextOptions {
   companyId: string;
   role: Permission | string;
   requestId?: string;
-  prismaClient?: PrismaClient | any;
+  prismaClient?: PrismaClient;
   logger?: MCPLogger;
 }
 

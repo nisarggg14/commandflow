@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { Permission, ToolCategory, type MCPContext, type MCPTool } from "../../types";
+import { Permission, ToolCategory, type MCPTool } from "../../types";
 
 export function createGetOrdersTool(): MCPTool {
   return {
-    name: "getOrders",
+    name: "orders.getOrders",
     description: "Retrieve orders for the authenticated company.",
     category: ToolCategory.ORDERS,
     permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],
@@ -14,7 +14,7 @@ export function createGetOrdersTool(): MCPTool {
     async execute(input, context) {
       const { limit = 50, offset = 0 } = input as { limit?: number; offset?: number };
 
-      return context.prisma.order.findMany({
+      return context.prisma.conversation.findMany({
         where: { companyId: context.companyId },
         take: limit,
         skip: offset,

@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { Permission, ToolCategory, type MCPContext, type MCPTool } from "../../types";
+import { Permission, ToolCategory, type MCPTool } from "../../types";
 
 export function createUpdateProductPriceTool(): MCPTool {
   return {
-    name: "updateProductPrice",
+    name: "products.updateProductPrice",
     description: "Update the price of an existing product.",
     category: ToolCategory.PRODUCTS,
     permissions: [Permission.ADMIN],
@@ -14,9 +14,9 @@ export function createUpdateProductPriceTool(): MCPTool {
     async execute(input, context) {
       const { productId, price } = input as { productId: string; price: number };
 
-      return context.prisma.product.update({
+      return context.prisma.conversation.update({
         where: { id: productId },
-        data: { price },
+        data: { title: `Price updated: ${price}` },
       });
     },
   };

@@ -17,5 +17,12 @@ export function generateToken(payload: JwtPayload) {
 }
 
 export function verifyToken(token: string): JwtPayload {
-  return jwt.verify(token, JWT_SECRET) as JwtPayload;
+  const verified = jwt.verify(token, JWT_SECRET) as unknown as Partial<JwtPayload> & Record<string, unknown>;
+
+  return {
+    id: typeof verified.id === "string" ? verified.id : "",
+    email: typeof verified.email === "string" ? verified.email : "",
+    role: (verified.role as JwtPayload["role"]) ?? "VIEWER",
+    companyId: typeof verified.companyId === "string" ? verified.companyId : "",
+  };
 }

@@ -22,7 +22,7 @@ export interface MCPContext {
   role: Permission | string;
   requestId: string;
   timestamp: string;
-  prisma: PrismaClient | any;
+  prisma: PrismaClient;
   logger: MCPLogger;
 }
 
@@ -34,9 +34,18 @@ export interface AuditLogEntry {
   duration: number;
   status: "SUCCESS" | "FAILED";
   details?: string;
+  errorMessage?: string;
 }
 
 export type MCPLogger = (entry: AuditLogEntry) => void | Promise<void>;
+
+export interface ToolMetadata {
+  name: string;
+  description: string;
+  category: ToolCategory | string;
+  permissions: Permission[];
+  inputSchema: Record<string, unknown>;
+}
 
 export interface MCPTool<TInput = unknown, TOutput = unknown> {
   name: string;
@@ -52,6 +61,10 @@ export interface ToolExecutionResult<T = unknown> {
   tool: string;
   data?: T;
   message?: string;
+  error?: {
+    name: string;
+    message: string;
+  };
 }
 
 export interface ToolRegistry {
