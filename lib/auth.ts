@@ -12,12 +12,13 @@ export interface AuthUser {
 
 export function authenticate(req: NextRequest): AuthUser {
   const authHeader = req.headers.get("authorization");
+  const tokenFromHeader = authHeader?.startsWith("Bearer ") ? authHeader.split(" ")[1] : undefined;
+  const tokenFromCookie = req.cookies.get("token")?.value;
+  const token = tokenFromHeader ?? tokenFromCookie;
 
-  if (!authHeader?.startsWith("Bearer ")) {
-    throw new UnauthorizedError();
+  if (!token) {
+    throw new UnauthorizedError("Authentication required.");
   }
-
-  const token = authHeader.split(" ")[1];
 
   return verifyToken(token) as AuthUser;
 }

@@ -26,14 +26,8 @@ export default function LoginPage() {
 
       const data = await response.json()
 
-      if (data.success === false) {
-        setError(data.message || 'Login failed. Please try again.')
-        setIsLoading(false)
-        return
-      }
-
-      if (!response.ok) {
-        setError(data.message || 'Login failed. Please try again.')
+      if (!response.ok || data.success === false) {
+        setError(data.message || 'Invalid credentials. Please try again.')
         setIsLoading(false)
         return
       }
@@ -42,9 +36,8 @@ export default function LoginPage() {
       localStorage.setItem('user', JSON.stringify(data.user))
 
       router.push('/')
-    } catch (err) {
-      setError('An error occurred. Please try again.')
-      console.error('[v0] Login error:', err)
+    } catch {
+      setError('An unexpected error occurred. Please try again.')
       setIsLoading(false)
     }
   }
@@ -110,6 +103,13 @@ export default function LoginPage() {
             {isLoading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+
+        <p className="text-center text-sm text-muted-foreground">
+          New to CommandFlow?{' '}
+          <a href="/register" className="font-medium text-accent hover:text-accent/80">
+            Create an account
+          </a>
+        </p>
       </div>
     </div>
   )

@@ -10,7 +10,21 @@ const ai = new GoogleGenAI({
   apiKey,
 });
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+function normalizeModelName(model?: string): string {
+  const trimmed = model?.trim();
+
+  if (!trimmed) {
+    return "gemini-2.0-flash";
+  }
+
+  return trimmed
+    .replace(/^models\//i, "")
+    .replace(/^publishers\/google\/models\//i, "")
+    .replace(/^google\//i, "")
+    .trim();
+}
+
+const MODEL = normalizeModelName(process.env.GEMINI_MODEL);
 
 export interface LLMResponse {
   success: boolean;

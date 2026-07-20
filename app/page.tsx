@@ -9,6 +9,17 @@ import { MessageBubble } from '@/components/message-bubble'
 import { EmptyState } from '@/components/empty-state'
 import { CommandExecutionCard, type CommandExecutionPayload } from '@/components/command-execution-card'
 
+interface AuthUser {
+  id: string
+  name: string
+  email: string
+  role: string
+  company?: {
+    id: string
+    name: string
+  }
+}
+
 interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -36,6 +47,7 @@ export default function Page() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -61,7 +73,24 @@ export default function Page() {
       return
     }
 
-    handleNewChat()
+    const loadUser = async () => {
+      const res = await fetch('/api/auth/me', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      if (!res.ok) {
+        router.push('/login')
+        return
+      }
+
+      const data = await res.json()
+      setAuthUser(data.user)
+    }
+
+    void loadUser()
+    void handleNewChat()
   }, [router])
 
   const handleNewChat = async () => {
@@ -171,7 +200,7 @@ export default function Page() {
       />
 
       <div className="flex flex-col flex-1 w-full md:w-0">
-        <TopBar title={activeConversation?.title || 'CommandFlow'} />
+        <TopBar title={activeConversation?.title || 'CommandFlow'} user={authUser} />
 
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-4xl mx-auto px-4 md:px-6 py-8">

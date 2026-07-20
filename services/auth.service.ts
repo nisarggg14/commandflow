@@ -4,11 +4,14 @@ import { generateToken } from "@/lib/jwt";
 import { registerSchema, loginSchema } from "@/validators/auth.validator";
 import { UserRole } from "@prisma/client";
 
+function sanitizeUser(user: { [key: string]: unknown }) {
+  const { password, ...rest } = user;
+  return rest;
+}
+
 export async function registerUser(data: unknown) {
-  // Validate input
   const validatedData = registerSchema.parse(data);
 
-  // Check if user already exists
   const existingUser = await prisma.user.findUnique({
     where: {
       email: validatedData.email,
@@ -16,19 +19,16 @@ export async function registerUser(data: unknown) {
   });
 
   if (existingUser) {
-    throw new Error("User already exists");
+    throw new Error("An account with this email already exists.");
   }
 
-  // Generate company slug
   const slug = validatedData.companyName
     .toLowerCase()
     .trim()
     .replace(/\s+/g, "-");
 
-  // Hash password
   const hashedPassword = await hashPassword(validatedData.password);
 
-  // Create company and first admin user in a transaction
   const { company, user } = await prisma.$transaction(async (tx) => {
     const company = await tx.company.create({
       data: {
@@ -50,7 +50,6 @@ export async function registerUser(data: unknown) {
     return { company, user };
   });
 
-  // Generate JWT
   const token = generateToken({
     id: user.id,
     email: user.email,
@@ -59,18 +58,17 @@ export async function registerUser(data: unknown) {
   });
 
   return {
+    success: true,
     message: "Company and admin user created successfully",
     token,
-    user,
+    user: sanitizeUser(user),
     company,
   };
 }
 
 export async function loginUser(data: unknown) {
-  // Validate input
   const validatedData = loginSchema.parse(data);
 
-  // Find user
   const user = await prisma.user.findUnique({
     where: {
       email: validatedData.email,
@@ -81,17 +79,12 @@ export async function loginUser(data: unknown) {
     throw new Error("Invalid email or password");
   }
 
-  // Compare password
-  const isPasswordValid = await comparePassword(
-    validatedData.password,
-    user.password
-  );
+  const isPasswordValid = await comparePassword(validatedData.password, user.password);
 
   if (!isPasswordValid) {
     throw new Error("Invalid email or password");
   }
 
-  // Generate JWT
   const token = generateToken({
     id: user.id,
     email: user.email,
@@ -100,9 +93,10 @@ export async function loginUser(data: unknown) {
   });
 
   return {
+    success: true,
     message: "Login successful",
     token,
-    user,
+    user: sanitizeUser(user),
   };
 }
 
@@ -120,5 +114,6 @@ export async function getCurrentUser(userId: string) {
     throw new Error("User not found");
   }
 
-  return user;
+  const { password, ...sanitizedUser } = user;
+  return sanitizedUser;
 }
