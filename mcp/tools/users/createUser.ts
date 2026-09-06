@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { UserRole } from "@prisma/client";
-import { Permission, ToolCategory, type MCPTool } from "../../types";
+import { Permission, RiskLevel, ToolCategory, type MCPTool } from "../../types";
 import { hashPassword } from "@/lib/bcrypt";
 
 export function createCreateUserTool(): MCPTool {
@@ -8,6 +8,8 @@ export function createCreateUserTool(): MCPTool {
     name: "users.createUser",
     description: "Create a user for the authenticated company.",
     category: ToolCategory.USERS,
+    riskLevel: RiskLevel.MEDIUM,
+    requiresMfaStepUp: false,
     permissions: [Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       name: z.string().min(1),

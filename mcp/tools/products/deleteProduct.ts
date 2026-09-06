@@ -1,19 +1,22 @@
 import { z } from "zod";
-import { Permission, ToolCategory, type MCPTool } from "../../types";
+import { Permission, RiskLevel, ToolCategory, type MCPTool } from "../../types";
+import { deleteProduct } from "@/services/inventory-api.service";
 
 export function createDeleteProductTool(): MCPTool {
   return {
     name: "products.deleteProduct",
-    description: "Delete a product for the authenticated company.",
+    description: "Delete a product from the Inventory backend after a server-validated HIGH-risk approval and MFA step-up.",
     category: ToolCategory.PRODUCTS,
-    permissions: [Permission.MANAGER, Permission.ADMIN],
+    riskLevel: RiskLevel.HIGH,
+    requiresMfaStepUp: true,
+    mfaPurpose: "products.deleteProduct",
+    permissions: [Permission.ADMIN],
     inputSchema: z.object({
-      productId: z.string().min(1),
+      productId: z.string().min(1).max(128),
     }),
-    async execute(input, context) {
+    async execute(input) {
       const { productId } = input as { productId: string };
-
-      return context.prisma.$executeRawUnsafe(`DELETE FROM "Product" WHERE id = '${productId}' AND "companyId" = '${context.companyId}'`);
+      return deleteProduct(productId);
     },
   };
 }

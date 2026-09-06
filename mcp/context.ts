@@ -9,6 +9,8 @@ interface CreateMcpContextOptions {
   requestId?: string;
   prismaClient?: PrismaClient;
   logger?: MCPLogger;
+  mfaChallengeToken?: string;
+  mfaVerified?: boolean;
 }
 
 export function createMcpContext({
@@ -18,6 +20,8 @@ export function createMcpContext({
   requestId,
   prismaClient,
   logger,
+  mfaChallengeToken,
+  mfaVerified,
 }: CreateMcpContextOptions): MCPContext {
   return {
     userId,
@@ -27,5 +31,7 @@ export function createMcpContext({
     timestamp: new Date().toISOString(),
     prisma: prismaClient ?? prisma,
     logger: logger ?? (() => undefined),
+    mfaChallengeToken,
+    mfaVerified,
   };
 }

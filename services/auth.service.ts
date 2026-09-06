@@ -4,8 +4,12 @@ import { generateToken } from "@/lib/jwt";
 import { registerSchema, loginSchema } from "@/validators/auth.validator";
 import { UserRole } from "@prisma/client";
 
+export function resolvePublicRegistrationRole(): UserRole {
+  return UserRole.VIEWER;
+}
+
 function sanitizeUser(user: { [key: string]: unknown }) {
-  const { password, ...rest } = user;
+  const { password, mfaSecret, ...rest } = user;
   return rest;
 }
 
@@ -42,7 +46,7 @@ export async function registerUser(data: unknown) {
         name: validatedData.name,
         email: validatedData.email,
         password: hashedPassword,
-        role: UserRole.ADMIN,
+        role: resolvePublicRegistrationRole(),
         companyId: company.id,
       },
     });

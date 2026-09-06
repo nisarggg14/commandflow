@@ -1,4 +1,11 @@
 import { z } from "zod";
+import { ApprovalStatus } from "@prisma/client";
+import { validateAndConsumeMfaChallenge } from "@/lib/mfa";
+import {
+  createApprovalRequest,
+  validateApprovalForExecution,
+  markApprovalExecuted,
+} from "@/services/approval.service";
 import type { MCPContext, MCPTool, ToolExecutionResult, ToolRegistry, ToolMetadata } from "./types";
 import {
   Permission,
@@ -43,6 +50,9 @@ export class CommandFlowMCPServer {
 
   async executeTool(name: string, input: unknown): Promise<ToolExecutionResult> {
     const startedAt = Date.now();
+    let riskLevel = "LOW";
+    let mfaRequired = false;
+    let mfaResult: "SUCCESS" | "FAILED" | "NOT_REQUIRED" = "NOT_REQUIRED";
 
     try {
       const tool = this.registry.get(name);
@@ -51,11 +61,93 @@ export class CommandFlowMCPServer {
         throw new ToolNotFoundError(`No tool registered with the name ${name}.`);
       }
 
+      riskLevel = tool.riskLevel ?? "LOW";
+      mfaRequired = tool.requiresMfaStepUp === true || riskLevel === "HIGH";
+
       const parsedInput = this.validate(tool, input);
       this.authorize(tool);
+      this.evaluateRisk(tool);
+
+      let approvalId: string | null = null;
+      let approvalPurpose = tool.mfaPurpose ?? tool.name;
+
+      if (riskLevel === "HIGH") {
+        const existingApproval = await this.context.prisma.approval.findFirst({
+          where: {
+            companyId: this.context.companyId,
+            requesterId: this.context.userId,
+            toolName: tool.name,
+            purpose: approvalPurpose,
+            riskLevel,
+            status: { in: [ApprovalStatus.APPROVED, ApprovalStatus.PENDING] },
+          },
+          orderBy: { createdAt: "desc" },
+        });
+
+        if (!existingApproval || existingApproval.status !== ApprovalStatus.APPROVED) {
+          const createdApproval = await createApprovalRequest({
+            prisma: this.context.prisma,
+            requesterId: this.context.userId,
+            companyId: this.context.companyId,
+            toolName: tool.name,
+            argumentsObject: parsedInput,
+            purpose: approvalPurpose,
+            riskLevel,
+          });
+
+          approvalId = createdApproval.id;
+          throw new PermissionDeniedError(`High-risk tool ${tool.name} requires a separate administrator approval before execution. Approval ${createdApproval.id} is pending.`);
+        }
+
+        approvalId = existingApproval.id;
+        await validateApprovalForExecution({
+          approval: {
+            id: existingApproval.id,
+            companyId: existingApproval.companyId,
+            requesterId: existingApproval.requesterId,
+            approverId: existingApproval.approverId,
+            toolName: existingApproval.toolName,
+            riskLevel: existingApproval.riskLevel,
+            purpose: existingApproval.purpose,
+            argumentsHash: existingApproval.argumentsHash,
+            status: existingApproval.status,
+            expiresAt: existingApproval.expiresAt,
+            executedAt: existingApproval.executedAt,
+            approvedAt: existingApproval.approvedAt,
+            rejectedAt: existingApproval.rejectedAt,
+          },
+          toolName: tool.name,
+          requesterId: this.context.userId,
+          companyId: this.context.companyId,
+          purpose: approvalPurpose,
+          riskLevel,
+          argumentsObject: parsedInput,
+        });
+      }
+
+      if (mfaRequired) {
+        const challengeToken = this.context.mfaChallengeToken;
+        if (!challengeToken) {
+          throw new PermissionDeniedError(`High-risk tool ${tool.name} requires a valid step-up MFA challenge.`);
+        }
+
+        const purpose = approvalId ? `approval:${approvalId}:execute` : (tool.mfaPurpose ?? tool.name);
+        await validateAndConsumeMfaChallenge(this.context.prisma, {
+          userId: this.context.userId,
+          challengeToken,
+          purpose,
+          riskLevel,
+        });
+        this.context.mfaVerified = true;
+        mfaResult = "SUCCESS";
+      }
 
       const data = await tool.execute(parsedInput, this.context);
       const duration = Date.now() - startedAt;
+
+      if (approvalId) {
+        await markApprovalExecuted(this.context.prisma, approvalId, this.context.companyId);
+      }
 
       await this.log({
         tool: tool.name,
@@ -64,6 +156,9 @@ export class CommandFlowMCPServer {
         timestamp: new Date().toISOString(),
         duration,
         status: "SUCCESS",
+        riskLevel,
+        mfaRequired,
+        mfaResult,
         details: "Executed successfully",
       });
 
@@ -79,6 +174,10 @@ export class CommandFlowMCPServer {
       const duration = Date.now() - startedAt;
       const message = error instanceof Error ? error.message : "Unknown error";
 
+      if (mfaRequired) {
+        mfaResult = "FAILED";
+      }
+
       await this.log({
         tool: name,
         user: this.context.userId,
@@ -86,6 +185,9 @@ export class CommandFlowMCPServer {
         timestamp: new Date().toISOString(),
         duration,
         status: "FAILED",
+        riskLevel,
+        mfaRequired,
+        mfaResult,
         details: message,
         errorMessage: message,
       });
@@ -162,6 +264,14 @@ export class CommandFlowMCPServer {
 
     if (!hasAccess) {
       throw new PermissionDeniedError(`Role ${currentRole} does not have permission to run ${tool.name}.`);
+    }
+  }
+
+  evaluateRisk(tool: MCPTool): void {
+    const riskLevel = tool.riskLevel ?? "LOW";
+
+    if (riskLevel === "HIGH" && tool.requiresMfaStepUp !== false && !this.context.mfaChallengeToken) {
+      throw new PermissionDeniedError(`High-risk tool ${tool.name} requires step-up MFA verification.`);
     }
   }
 

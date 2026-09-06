@@ -13,7 +13,14 @@ export enum ToolCategory {
   ORDERS = "ORDERS",
   USERS = "USERS",
   CONVERSATIONS = "CONVERSATIONS",
+  ANALYTICS = "ANALYTICS",
   SYSTEM = "SYSTEM",
+}
+
+export enum RiskLevel {
+  LOW = "LOW",
+  MEDIUM = "MEDIUM",
+  HIGH = "HIGH",
 }
 
 export interface MCPContext {
@@ -24,6 +31,8 @@ export interface MCPContext {
   timestamp: string;
   prisma: PrismaClient;
   logger: MCPLogger;
+  mfaVerified?: boolean;
+  mfaChallengeToken?: string;
 }
 
 export interface AuditLogEntry {
@@ -33,6 +42,9 @@ export interface AuditLogEntry {
   timestamp: string;
   duration: number;
   status: "SUCCESS" | "FAILED";
+  riskLevel?: string;
+  mfaRequired?: boolean;
+  mfaResult?: "SUCCESS" | "FAILED" | "NOT_REQUIRED";
   details?: string;
   errorMessage?: string;
 }
@@ -52,6 +64,9 @@ export interface MCPTool<TInput = unknown, TOutput = unknown> {
   description: string;
   category: ToolCategory;
   permissions: Permission[];
+  riskLevel?: RiskLevel;
+  requiresMfaStepUp?: boolean;
+  mfaPurpose?: string;
   inputSchema: z.ZodTypeAny;
   execute: (input: TInput, context: MCPContext) => Promise<TOutput> | TOutput;
 }

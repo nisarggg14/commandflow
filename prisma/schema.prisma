@@ -30,6 +30,15 @@ enum ActivityStatus {
   PENDING
 }
 
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELLED
+  EXECUTED
+}
+
 model Company {
   id          String   @id @default(cuid())
   name        String
@@ -43,6 +52,7 @@ model Company {
   applications  Application[]
   conversations Conversation[]
   activityLogs  ActivityLog[]
+  approvals     Approval[]
 }
 
 model User {
@@ -52,12 +62,18 @@ model User {
   password String
   role     UserRole
 
+  mfaEnabled Boolean @default(false)
+  mfaSecret  String?
+
   companyId String
   company   Company @relation(fields: [companyId], references: [id])
 
   sessions      Session[]
   conversations Conversation[]
   activityLogs  ActivityLog[]
+  mfaChallenges MfaChallenge[]
+  approvalsRequested Approval[] @relation("ApprovalRequester")
+  approvalsReviewed  Approval[] @relation("ApprovalApprover")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -137,4 +153,49 @@ model ActivityLog {
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
+}
+
+model MfaChallenge {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  purpose       String
+  riskLevel     String?
+  challengeToken String @unique
+  expiresAt     DateTime
+  verifiedAt    DateTime?
+  createdAt     DateTime @default(now())
+}
+
+model Approval {
+  id String @id @default(cuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  requesterId String
+  requester   User   @relation("ApprovalRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+
+  approverId String?
+  approver   User?  @relation("ApprovalApprover", fields: [approverId], references: [id], onDelete: SetNull)
+
+  toolName            String
+  riskLevel           String
+  purpose             String
+  argumentsHash       String
+  safeArgumentsSummary String @db.Text
+  status              ApprovalStatus @default(PENDING)
+  expiresAt           DateTime
+  createdAt           DateTime @default(now())
+  approvedAt          DateTime?
+  rejectedAt          DateTime?
+  executedAt          DateTime?
+
+  @@index([companyId])
+  @@index([requesterId])
+  @@index([approverId])
+  @@index([status])
+  @@index([expiresAt])
 }
