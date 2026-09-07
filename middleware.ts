@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const protectedPrefixes = ["/", "/chat", "/settings"];
-const protectedApiPrefixes = ["/api/chat"];
+const protectedPrefixes = ["/", "/chat", "/settings", "/logs"];
+const protectedApiPrefixes = ["/api/chat", "/api/logs"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -20,5 +20,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/chat", "/settings", "/api/chat/:path*", "/((?!api/auth|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/", "/chat", "/settings", "/logs", "/api/chat/:path*", "/api/logs/:path*", "/((?!api/auth|_next/static|_next/image|favicon.ico).*)"],
 };
