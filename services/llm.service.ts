@@ -14,7 +14,7 @@ function normalizeModelName(model?: string): string {
   const trimmed = model?.trim();
 
   if (!trimmed) {
-    return "gemini-2.0-flash";
+    return "gemini-3.6-flash";
   }
 
   return trimmed

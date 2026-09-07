@@ -66,18 +66,9 @@ export default function Page() {
   useEffect(() => {
     if (typeof window === 'undefined') return
 
-    const token = localStorage.getItem('token')
-
-    if (!token) {
-      router.push('/login')
-      return
-    }
-
     const loadUser = async () => {
       const res = await fetch('/api/auth/me', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        credentials: 'include',
       })
 
       if (!res.ok) {
@@ -94,14 +85,12 @@ export default function Page() {
   }, [router])
 
   const handleNewChat = async () => {
-    const token = localStorage.getItem('token')
-
     const res = await fetch('/api/conversations', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
       },
+      credentials: 'include',
       body: JSON.stringify({
         title: 'New Conversation',
       }),
@@ -146,14 +135,12 @@ export default function Page() {
 
     setIsLoading(true)
 
-    const token = localStorage.getItem('token')
-
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
       },
+      credentials: 'include',
       body: JSON.stringify({
         conversationId: activeConversationId,
         message,

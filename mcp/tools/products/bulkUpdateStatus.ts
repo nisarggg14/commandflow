@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Permission, RiskLevel, ToolCategory, type MCPTool } from "../../types";
-import { updateProduct } from "@/services/inventory-api.service";
+import { bulkUpdateStatus } from "@/services/inventory-api.service";
 
 export function createBulkUpdateStatusTool(): MCPTool {
   return {
@@ -20,29 +20,7 @@ export function createBulkUpdateStatusTool(): MCPTool {
         status: string;
       };
 
-      const results = await Promise.all(
-        productIds.map(async (productId) => {
-          try {
-            const data = await updateProduct(productId, { status });
-            return { productId, success: true, data };
-          } catch (error) {
-            return {
-              productId,
-              success: false,
-              error: error instanceof Error ? error.message : "Inventory update failed.",
-            };
-          }
-        })
-      );
-
-      const successful = results.filter((item) => item.success).length;
-      const failed = results.length - successful;
-
-      return {
-        updated: successful,
-        failed,
-        results,
-      };
+      return bulkUpdateStatus(productIds, status);
     },
   };
 }

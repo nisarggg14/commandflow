@@ -25,6 +25,38 @@ export interface InventoryProduct {
   variants: InventoryProductVariant[];
 }
 
+export interface InventorySummaryResponse {
+  totalProducts: number;
+  activeProducts: number;
+  inactiveProducts: number;
+  totalVariants: number;
+  totalStock: number;
+  lowStockCount: number;
+  byCategory?: Record<string, number>;
+  byStatus?: Record<string, number>;
+}
+
+export interface InventoryLowStockItem {
+  productId: string;
+  name: string;
+  category: string;
+  status: string;
+  totalStock: number;
+  threshold: number;
+  variants: Array<{
+    sku: string;
+    color: string;
+    size: string;
+    stock: number;
+  }>;
+}
+
+export interface InventoryLowStockReport {
+  threshold: number;
+  count: number;
+  products: InventoryLowStockItem[];
+}
+
 const INVENTORY_BASE_URL = (process.env.INVENTORY_API_BASE_URL ?? "http://localhost:5000").replace(/\/+$/, "");
 
 let inventoryToken: string | null = null;
@@ -161,7 +193,7 @@ async function inventoryRequest<T>(
 }
 
 export async function getProducts(): Promise<InventoryProduct[]> {
-  return inventoryRequest<InventoryProduct[]>("/products", { method: "GET" }, false);
+  return inventoryRequest<InventoryProduct[]>("/products", { method: "GET" }, true);
 }
 
 export async function getProduct(productId: string): Promise<InventoryProduct> {
@@ -169,7 +201,26 @@ export async function getProduct(productId: string): Promise<InventoryProduct> {
     throw new Error("Product ID is required.");
   }
 
-  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}`, { method: "GET" }, false);
+  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}`, { method: "GET" }, true);
+}
+
+export async function getInventorySummary(category?: string): Promise<InventorySummaryResponse> {
+  const params = new URLSearchParams();
+  if (category && category.trim()) {
+    params.set("category", category.trim());
+  }
+
+  const query = params.toString();
+  return inventoryRequest<InventorySummaryResponse>(`/products/summary${query ? `?${query}` : ""}`, { method: "GET" }, true);
+}
+
+export async function getLowStockReport(threshold = 10, category?: string): Promise<InventoryLowStockReport> {
+  const params = new URLSearchParams({ threshold: String(threshold) });
+  if (category && category.trim()) {
+    params.set("category", category.trim());
+  }
+
+  return inventoryRequest<InventoryLowStockReport>(`/products/low-stock?${params.toString()}`, { method: "GET" }, true);
 }
 
 export async function createProduct(payload: {
@@ -204,6 +255,75 @@ export async function updateProduct(
   return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}`, {
     method: "PUT",
     body: JSON.stringify(payload),
+  }, true);
+}
+
+export async function updateStock(
+  productId: string,
+  payload: {
+    stock?: number;
+    delta?: number;
+    sku?: string;
+    variantId?: string;
+  }
+): Promise<InventoryProduct> {
+  if (!productId || !productId.trim()) {
+    throw new Error("Product ID is required.");
+  }
+
+  if (typeof payload.stock !== "number" && typeof payload.delta !== "number") {
+    throw new Error("A target stock value or delta is required.");
+  }
+
+  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}/stock`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  }, true);
+}
+
+export async function reduceProductPrice(
+  productId: string,
+  payload: {
+    percentage?: number;
+    amount?: number;
+    price?: number;
+    variantId?: string;
+    sku?: string;
+  }
+): Promise<InventoryProduct> {
+  if (!productId || !productId.trim()) {
+    throw new Error("Product ID is required.");
+  }
+
+  const hasPriceValue = typeof payload.price === "number";
+  const hasPercentValue = typeof payload.percentage === "number";
+  const hasAmountValue = typeof payload.amount === "number";
+
+  if (!hasPriceValue && !hasPercentValue && !hasAmountValue) {
+    throw new Error("A price value, percentage reduction, or amount reduction is required.");
+  }
+
+  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}/price`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  }, true);
+}
+
+export async function bulkUpdateStatus(
+  productIds: string[],
+  status: string
+): Promise<{ updated: number; failed: number; affectedProductIds: string[]; errors: string[] }> {
+  if (!Array.isArray(productIds) || productIds.length === 0) {
+    throw new Error("At least one product ID is required.");
+  }
+
+  if (!status || !status.trim()) {
+    throw new Error("A status is required.");
+  }
+
+  return inventoryRequest<{ updated: number; failed: number; affectedProductIds: string[]; errors: string[] }>("/products/bulk-status", {
+    method: "PATCH",
+    body: JSON.stringify({ productIds, status }),
   }, true);
 }
 
