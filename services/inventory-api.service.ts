@@ -123,7 +123,7 @@ function normalizeInventoryError(status: number, payload?: unknown): Error {
   }
 
   if (status === 404) {
-    return new Error("Product not found.");
+    return new Error("Inventory endpoint or product was not found.");
   }
 
   if (status === 400) {

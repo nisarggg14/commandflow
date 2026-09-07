@@ -5,6 +5,7 @@ import { createSearchProductsTool } from "./products/searchProducts";
 import { createUpdateProductTool } from "./products/updateProduct";
 import { createBulkUpdateStatusTool } from "./products/bulkUpdateStatus";
 import { createUpdateStockTool } from "./products/updateStock";
+import { createAdjustPriceTool } from "./products/adjustPrice";
 import { createDeleteProductTool } from "./products/deleteProduct";
 import { createGetOrdersTool } from "./orders/getOrders";
 import { createCancelOrderTool } from "./orders/cancelOrder";
@@ -33,6 +34,7 @@ export function createDefaultTools(): MCPTool[] {
     createUpdateProductTool(),
     createBulkUpdateStatusTool(),
     createUpdateStockTool(),
+    createAdjustPriceTool(),
     createDeleteProductTool(),
     createInventorySummaryTool(),
     createLowStockReportTool(),
@@ -61,6 +63,7 @@ export {
   createUpdateProductTool,
   createBulkUpdateStatusTool,
   createUpdateStockTool,
+  createAdjustPriceTool,
   createDeleteProductTool,
   createInventorySummaryTool,
   createLowStockReportTool,

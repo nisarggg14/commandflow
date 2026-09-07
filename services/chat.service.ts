@@ -3,6 +3,7 @@ import { MessageRole, UserRole } from "@prisma/client";
 import { parseCommand } from "./command-parser.service";
 import { createCommandServer } from "./tool.service";
 import { Permission } from "@/mcp/types";
+import { resolveProductReference } from "./product-resolver.service";
 
 interface ChatRequest {
   conversationId: string;
@@ -115,7 +116,28 @@ export async function processChat(data: ChatRequest) {
   };
 
   if (parsedCommand.tool) {
-    const executionResult = await server.executeTool(parsedCommand.tool, parsedCommand.arguments ?? {});
+    let executionResult;
+
+    try {
+      const resolvedArguments = await resolveProductReference(
+        parsedCommand.tool,
+        parsedCommand.arguments ?? {},
+        message
+      );
+      executionResult = await server.executeTool(parsedCommand.tool, resolvedArguments);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Command could not be completed.";
+      executionResult = {
+        success: false,
+        tool: parsedCommand.tool,
+        message: errorMessage,
+        error: {
+          name: error instanceof Error ? error.name : "ExecutionError",
+          message: errorMessage,
+        },
+      };
+    }
+
     responsePayload = buildExecutionPayload(executionResult, startedAt, server.metrics());
   }
 

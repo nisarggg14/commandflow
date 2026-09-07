@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Permission, RiskLevel, ToolCategory, type MCPTool } from "../../types";
-import { updateProduct } from "@/services/inventory-api.service";
+import { getProduct, updateProduct } from "@/services/inventory-api.service";
 
 export function createUpdateProductTool(): MCPTool {
   return {
@@ -12,6 +12,7 @@ export function createUpdateProductTool(): MCPTool {
     permissions: [Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       productId: z.string().min(1),
+      productQuery: z.string().min(1).optional(),
       name: z.string().min(1).optional(),
       brand: z.string().min(1).optional(),
       category: z.string().min(1).optional(),
@@ -19,8 +20,9 @@ export function createUpdateProductTool(): MCPTool {
       status: z.string().min(1).optional(),
     }),
     async execute(input) {
-      const { productId, ...rest } = input as {
+      const { productId, productQuery: _productQuery, ...rest } = input as {
         productId: string;
+        productQuery?: string;
         name?: string;
         brand?: string;
         category?: string;
@@ -28,7 +30,16 @@ export function createUpdateProductTool(): MCPTool {
         status?: string;
       };
 
-      return updateProduct(productId, rest);
+      const updated = await updateProduct(productId, rest);
+      const verified = await getProduct(productId);
+
+      for (const [field, expectedValue] of Object.entries(rest)) {
+        if (verified[field as keyof typeof verified] !== expectedValue) {
+          throw new Error(`Product update could not be verified for ${field}.`);
+        }
+      }
+
+      return updated;
     },
   };
 }

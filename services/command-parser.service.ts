@@ -65,6 +65,14 @@ If the request does not match any tool, return:
 Available tools:
 ${toolPrompt}
 
+Argument rules:
+- For a product operation, use the exact productId when the user provides one, such as P1002.
+- If the user gives a product name, put it in productQuery and do not invent an ID.
+- For products.updateProduct, put the requested field directly in its supported field name.
+- For products.updateStock, include stock for an absolute value and include sku or variantId when the product has multiple variants.
+- For products.adjustPrice, use operation increase, reduce, or set; use percentage for increase/reduce and price for set.
+- For analytics tools, do not include productId or productQuery unless the user explicitly asks for a category filter.
+
 User request:
 ${message}
 `;
