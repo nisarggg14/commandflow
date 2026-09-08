@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const protectedPrefixes = ["/", "/chat", "/settings", "/logs"];
+const protectedPrefixes = ["/chat", "/settings", "/logs"];
 const protectedApiPrefixes = ["/api/chat", "/api/logs"];
 
 export function middleware(request: NextRequest) {
