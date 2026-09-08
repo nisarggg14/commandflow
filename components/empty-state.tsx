@@ -2,17 +2,25 @@ import { SuggestionChip } from './suggestion-chip'
 
 interface EmptyStateProps {
   onSuggestionClick: (text: string) => void
+  role?: string
 }
 
-export function EmptyState({ onSuggestionClick }: EmptyStateProps) {
-  const suggestions = [
-    'Show products',
-    'Update stock',
-    'Reduce prices',
-    'Show pending orders',
-    'Disable employee',
-    'List applications',
-  ]
+export function getSuggestionsForRole(role?: string) {
+  const readSuggestions = ['Show products', 'Show inventory summary', 'List applications', 'Switch to dark mode']
+
+  if (role === 'ADMIN') {
+    return [...readSuggestions, 'Update stock', 'Reduce prices', 'Disable employee']
+  }
+
+  if (role === 'MANAGER') {
+    return [...readSuggestions, 'Update stock', 'Reduce prices']
+  }
+
+  return readSuggestions
+}
+
+export function EmptyState({ onSuggestionClick, role }: EmptyStateProps) {
+  const suggestions = getSuggestionsForRole(role)
 
   return (
     <div className="flex flex-col items-center justify-center min-h-full gap-8 px-4 py-16">

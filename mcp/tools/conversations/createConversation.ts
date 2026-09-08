@@ -6,7 +6,7 @@ export function createCreateConversationTool(): MCPTool {
     name: "conversations.createConversation",
     description: "Create a conversation record for the authenticated user and company.",
     category: ToolCategory.CONVERSATIONS,
-    permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],
+    permissions: [Permission.VIEWER, Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       title: z.string().min(1).max(200),
     }),

@@ -161,35 +161,44 @@ async function inventoryRequest<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  if (requireAuth) {
-    const token = await getInventoryToken();
-    headers.set("Authorization", `Bearer ${token}`);
+  for (let attempt = 0; attempt < (requireAuth ? 2 : 1); attempt += 1) {
+    if (requireAuth) {
+      const token = await getInventoryToken();
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+
+    const response = await fetch(requestUrl.toString(), {
+      ...options,
+      headers,
+    });
+
+    const contentType = response.headers.get("content-type") ?? "";
+    let payload: unknown = null;
+
+    if (contentType.includes("application/json")) {
+      payload = await response.json();
+    } else if (response.status !== 204) {
+      payload = await response.text();
+    }
+
+    if (response.status === 401 && requireAuth && attempt === 0) {
+      inventoryToken = null;
+      inventoryTokenExpiresAt = 0;
+      continue;
+    }
+
+    if (!response.ok) {
+      throw normalizeInventoryError(response.status, payload);
+    }
+
+    if (response.status === 204) {
+      return null as T;
+    }
+
+    return payload as T;
   }
 
-  const response = await fetch(requestUrl.toString(), {
-    ...options,
-    headers,
-  });
-
-  const contentType = response.headers.get("content-type") ?? "";
-
-  let payload: unknown = null;
-
-  if (contentType.includes("application/json")) {
-    payload = await response.json();
-  } else if (response.status !== 204) {
-    payload = await response.text();
-  }
-
-  if (!response.ok) {
-    throw normalizeInventoryError(response.status, payload);
-  }
-
-  if (response.status === 204) {
-    return null as T;
-  }
-
-  return payload as T;
+  throw new Error("Inventory request failed.");
 }
 
 export async function getProducts(): Promise<InventoryProduct[]> {

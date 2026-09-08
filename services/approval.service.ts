@@ -2,6 +2,7 @@ import crypto from "crypto";
 import type { PrismaClient } from "@prisma/client";
 import { ApprovalStatus } from "@prisma/client";
 import { validateAndConsumeMfaChallenge } from "@/lib/mfa";
+import { redactAuditValue } from "@/lib/audit-redaction";
 
 export interface CreateApprovalRequestInput {
   prisma: PrismaClient;
@@ -157,7 +158,7 @@ export function summarizeApprovalArguments(toolName: string, argumentsObject: un
   }
 
   return entries
-    .map(([key, value]) => `${key}=${String(value)}`)
+    .map(([key, value]) => `${key}=${String(redactAuditValue(key, value))}`)
     .join(", ");
 }
 

@@ -9,7 +9,7 @@ export function createGetProductsTool(): MCPTool {
     category: ToolCategory.PRODUCTS,
     riskLevel: RiskLevel.LOW,
     requiresMfaStepUp: false,
-    permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],
+    permissions: [Permission.VIEWER, Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       limit: z.number().int().min(1).max(100).optional(),
       offset: z.number().int().min(0).optional(),

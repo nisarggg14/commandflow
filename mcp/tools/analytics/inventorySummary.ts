@@ -9,7 +9,7 @@ export function createInventorySummaryTool(): MCPTool {
     category: ToolCategory.ANALYTICS,
     riskLevel: RiskLevel.LOW,
     requiresMfaStepUp: false,
-    permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],
+    permissions: [Permission.VIEWER, Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       category: z.string().min(1).optional(),
     }),

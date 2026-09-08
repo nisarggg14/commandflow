@@ -6,7 +6,7 @@ export function createGetOrdersTool(): MCPTool {
     name: "orders.getOrders",
     description: "Unsupported: the Inventory Backend has no order API.",
     category: ToolCategory.ORDERS,
-    permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],
+    permissions: [Permission.VIEWER, Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       limit: z.number().int().min(1).max(100).optional(),
       offset: z.number().int().min(0).optional(),

@@ -6,7 +6,7 @@ export function createRenameConversationTool(): MCPTool {
     name: "conversations.renameConversation",
     description: "Rename an existing conversation for the authenticated user.",
     category: ToolCategory.CONVERSATIONS,
-    permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],
+    permissions: [Permission.VIEWER, Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       conversationId: z.string().min(1),
       title: z.string().min(1).max(200),

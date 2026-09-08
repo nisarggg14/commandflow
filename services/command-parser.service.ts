@@ -7,7 +7,11 @@ export interface ParsedCommand {
   action?: "unknown";
 }
 
-function sanitizeCommand(raw: string): ParsedCommand {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function sanitizeCommand(raw: string): ParsedCommand {
   const trimmed = raw.trim();
 
   if (!trimmed) {
@@ -20,11 +24,20 @@ function sanitizeCommand(raw: string): ParsedCommand {
   try {
     const parsed = JSON.parse(payload);
 
-    if (parsed && typeof parsed === "object") {
+    if (isPlainObject(parsed)) {
       if (typeof parsed.tool === "string") {
+        const hasArguments = Object.prototype.hasOwnProperty.call(parsed, "arguments");
+        const parsedArguments = hasArguments
+          ? (isPlainObject(parsed.arguments) ? parsed.arguments : null)
+          : (isPlainObject(parsed.parameters) ? parsed.parameters : null);
+
+        if (!parsedArguments) {
+          return { action: "unknown" };
+        }
+
         return {
           tool: parsed.tool,
-          arguments: parsed.arguments && typeof parsed.arguments === "object" ? parsed.arguments : {},
+          arguments: parsedArguments,
         };
       }
 
@@ -39,6 +52,33 @@ function sanitizeCommand(raw: string): ParsedCommand {
   return { action: "unknown" };
 }
 
+function formatSchema(schema: Record<string, unknown>): string {
+  if (schema.type === "object") {
+    const properties = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+    const fields = Object.entries(properties).map(([name, property]) => {
+      const optional = required.has(name) ? "" : " (optional)";
+      return `${name}${optional}: ${formatSchema(property)}`;
+    });
+
+    return `{ ${fields.join(", ")} }`;
+  }
+
+  if (schema.type === "enum" && Array.isArray(schema.values)) {
+    return schema.values.map((value) => JSON.stringify(value)).join(" | ");
+  }
+
+  if (schema.type === "array") {
+    return `${formatSchema((schema.items ?? {}) as Record<string, unknown>)}[]`;
+  }
+
+  if (schema.type === "number" || schema.type === "boolean" || schema.type === "string") {
+    return schema.type;
+  }
+
+  return "unknown";
+}
+
 export async function parseCommand(
   message: string,
   server: CommandFlowMCPServer
@@ -46,7 +86,10 @@ export async function parseCommand(
   const tools = server.listTools();
 
   const toolPrompt = tools
-    .map((tool) => `- ${tool.name}: ${tool.description}`)
+    .map((tool) => {
+      const schema = formatSchema(tool.inputSchema);
+      return `- ${tool.name}: ${tool.description}\n  arguments: ${schema}`;
+    })
     .join("\n");
 
   const prompt = `
@@ -58,6 +101,9 @@ No conversational text.
 
 If the request matches a tool, return:
 {"tool":"<tool.name>","arguments":{...}}
+
+The property must be named exactly "arguments". "parameters" is accepted only as a parser compatibility fallback.
+Use only the exact argument property names and allowed values shown below. Do not invent aliases such as "color" or "accentColor".
 
 If the request does not match any tool, return:
 {"action":"unknown"}

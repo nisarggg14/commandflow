@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { processChat } from "@/services/chat.service";
 import { authenticate } from "@/lib/auth";
+import { GeminiQuotaError } from "@/services/llm.service";
 
 export async function POST(req: NextRequest) {
   try {
@@ -28,6 +29,13 @@ export async function POST(req: NextRequest) {
           message: error.message,
         },
         { status: 404 }
+      );
+    }
+
+    if (error instanceof GeminiQuotaError) {
+      return NextResponse.json(
+        { success: false, message: error.message },
+        { status: 429 }
       );
     }
 

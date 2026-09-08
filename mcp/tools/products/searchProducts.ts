@@ -9,7 +9,7 @@ export function createSearchProductsTool(): MCPTool {
     category: ToolCategory.PRODUCTS,
     riskLevel: RiskLevel.LOW,
     requiresMfaStepUp: false,
-    permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],
+    permissions: [Permission.VIEWER, Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       productId: z.string().min(1).optional(),
       name: z.string().min(1).optional(),

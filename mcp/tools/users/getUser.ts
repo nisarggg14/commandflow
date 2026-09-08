@@ -8,7 +8,7 @@ export function createGetUserTool(): MCPTool {
     category: ToolCategory.USERS,
     riskLevel: RiskLevel.LOW,
     requiresMfaStepUp: false,
-    permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],
+    permissions: [Permission.VIEWER, Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       userId: z.string().min(1),
     }),

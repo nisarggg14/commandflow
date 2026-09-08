@@ -9,7 +9,7 @@ export function createLowStockReportTool(): MCPTool {
     category: ToolCategory.ANALYTICS,
     riskLevel: RiskLevel.LOW,
     requiresMfaStepUp: false,
-    permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],
+    permissions: [Permission.VIEWER, Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       threshold: z.number().int().min(0).max(100000).optional(),
       category: z.string().min(1).optional(),

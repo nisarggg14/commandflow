@@ -41,6 +41,38 @@ function parseExecutionPayload(content: string): CommandExecutionPayload | null 
   }
 }
 
+type UiControl =
+  | { type: 'ui-control'; action: 'getTheme' }
+  | { type: 'ui-control'; action: 'setTheme'; theme: 'light' | 'dark' | 'system' }
+  | { type: 'ui-control'; action: 'setBackground'; background: 'obsidian' | 'paper' | 'mist' }
+  | { type: 'ui-control'; action: 'setAccentColor'; accent: 'mint' | 'sky' | 'amber' }
+
+function applyUiControl(value: unknown) {
+  if (!value || typeof value !== 'object' || !('type' in value) || value.type !== 'ui-control') return
+
+  const control = value as UiControl
+  const root = document.documentElement
+
+  if (control.action === 'setTheme') {
+    root.classList.toggle('dark', control.theme === 'dark')
+    root.classList.toggle('light', control.theme === 'light')
+    if (control.theme === 'system') root.classList.remove('dark', 'light')
+  }
+
+  if (control.action === 'setBackground') {
+    const backgrounds = { obsidian: '#0a0a0a', paper: '#f7f5ef', mist: '#e8f0f2' } as const
+    root.style.setProperty('--background', backgrounds[control.background])
+  }
+
+  if (control.action === 'setAccentColor') {
+    const accents = { mint: '#10a37f', sky: '#0284c7', amber: '#d97706' } as const
+    const accent = accents[control.accent]
+    root.style.setProperty('--accent', accent)
+    root.style.setProperty('--ring', accent)
+    root.style.setProperty('--primary', accent)
+  }
+}
+
 export default function Page() {
   const router = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -151,7 +183,29 @@ export default function Page() {
 
     setIsLoading(false)
 
-    if (!data.success) return
+    if (!data.success) {
+      const errorMessage: Message = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: data.message || 'The command could not be completed.',
+      }
+
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === activeConversationId
+            ? { ...c, messages: [...c.messages, errorMessage] }
+            : c
+        )
+      )
+      return
+    }
+
+    try {
+      const payload = JSON.parse(data.response) as CommandExecutionPayload
+      applyUiControl(payload.data)
+    } catch {
+      // Render malformed or non-command responses as normal assistant content.
+    }
 
     const assistantMessage: Message = {
       id: crypto.randomUUID(),
@@ -193,7 +247,7 @@ export default function Page() {
           <div className="max-w-4xl mx-auto px-4 md:px-6 py-8">
             {!activeConversation ||
             activeConversation.messages.length === 0 ? (
-              <EmptyState onSuggestionClick={handleSuggestionClick} />
+              <EmptyState onSuggestionClick={handleSuggestionClick} role={authUser?.role} />
             ) : (
               <div className="space-y-6">
                 {activeConversation.messages.map((msg) => {

@@ -26,8 +26,9 @@ export function createAdjustPriceTool(): MCPTool {
     name: "products.adjustPrice",
     description: "Increase, reduce, or set one product variant price. The application calculates the final price deterministically; provide productId, operation, percentage for increase/reduce, or price for set.",
     category: ToolCategory.PRODUCTS,
-    riskLevel: RiskLevel.MEDIUM,
-    requiresMfaStepUp: false,
+    riskLevel: RiskLevel.HIGH,
+    requiresMfaStepUp: true,
+    mfaPurpose: "products.adjustPrice",
     permissions: [Permission.MANAGER, Permission.ADMIN],
     inputSchema: priceInputSchema,
     async execute(input) {

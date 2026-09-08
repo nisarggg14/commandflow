@@ -6,7 +6,7 @@ export function createListApplicationsTool(): MCPTool {
     name: "applications.listApplications",
     description: "List applications for the authenticated company.",
     category: ToolCategory.SYSTEM,
-    permissions: [Permission.VIEWER, Permission.EMPLOYEE, Permission.MANAGER, Permission.ADMIN],
+    permissions: [Permission.VIEWER, Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       limit: z.number().int().min(1).max(100).optional(),
       offset: z.number().int().min(0).optional(),

@@ -26,6 +26,27 @@ function normalizeModelName(model?: string): string {
 
 const MODEL = normalizeModelName(process.env.GEMINI_MODEL);
 
+export const GEMINI_QUOTA_MESSAGE = "AI service temporarily unavailable because the Gemini API quota has been exceeded. Please try again later.";
+
+export class GeminiQuotaError extends Error {
+  constructor() {
+    super(GEMINI_QUOTA_MESSAGE);
+    this.name = "GeminiQuotaError";
+  }
+}
+
+export function isGeminiQuotaError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const providerError = error as { status?: unknown; code?: unknown; message?: unknown };
+  const status = Number(providerError.status ?? providerError.code);
+  const message = typeof providerError.message === "string" ? providerError.message : "";
+
+  return status === 429 || /RESOURCE_EXHAUSTED|quota|rate.?limit|\b429\b/i.test(message);
+}
+
 export interface LLMResponse {
   success: boolean;
   text: string;
@@ -46,6 +67,9 @@ export async function generateResponse(
     };
   } catch (error) {
     console.error("Gemini Error:", error);
+    if (isGeminiQuotaError(error)) {
+      throw new GeminiQuotaError();
+    }
     throw error;
   }
 }

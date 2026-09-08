@@ -4,7 +4,6 @@ import { z } from "zod";
 export enum Permission {
   ADMIN = "ADMIN",
   MANAGER = "MANAGER",
-  EMPLOYEE = "EMPLOYEE",
   VIEWER = "VIEWER",
 }
 
@@ -15,6 +14,7 @@ export enum ToolCategory {
   CONVERSATIONS = "CONVERSATIONS",
   ANALYTICS = "ANALYTICS",
   SYSTEM = "SYSTEM",
+  UI = "UI",
 }
 
 export enum RiskLevel {

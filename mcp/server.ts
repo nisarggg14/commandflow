@@ -15,6 +15,7 @@ import {
   type AuditLogEntry,
 } from "./types";
 import { InMemoryToolRegistry } from "./registry";
+import { redactAuditText } from "@/lib/audit-redaction";
 
 interface RuntimeMetrics {
   totalExecutions: number;
@@ -188,8 +189,8 @@ export class CommandFlowMCPServer {
         riskLevel,
         mfaRequired,
         mfaResult,
-        details: message,
-        errorMessage: message,
+        details: redactAuditText(message),
+        errorMessage: redactAuditText(message),
       });
 
       this.recordMetric(duration, false);
@@ -207,7 +208,7 @@ export class CommandFlowMCPServer {
   }
 
   listTools(): ToolMetadata[] {
-    return this.registry.list().map((tool) => ({
+    return this.registry.list().filter((tool) => this.canAccess(tool)).map((tool) => ({
       name: tool.name,
       description: tool.description,
       category: tool.category,
@@ -251,20 +252,19 @@ export class CommandFlowMCPServer {
   }
 
   authorize(tool: MCPTool): void {
-    const requiredPermissions = tool.permissions;
-
-    if (requiredPermissions.length === 0) {
-      return;
-    }
-
-    const currentRole = this.context.role as string;
-    const currentRank = this.roleRank(currentRole);
-
-    const hasAccess = requiredPermissions.every((permission) => this.roleRank(permission) <= currentRank);
-
-    if (!hasAccess) {
+    if (!this.canAccess(tool)) {
+      const currentRole = this.context.role as string;
       throw new PermissionDeniedError(`Role ${currentRole} does not have permission to run ${tool.name}.`);
     }
+  }
+
+  private canAccess(tool: MCPTool): boolean {
+    if (tool.permissions.length === 0) {
+      return true;
+    }
+
+    const currentRank = this.roleRank(this.context.role as string);
+    return tool.permissions.some((permission) => this.roleRank(permission) <= currentRank);
   }
 
   evaluateRisk(tool: MCPTool): void {
@@ -287,7 +287,7 @@ export class CommandFlowMCPServer {
               user: entry.user,
               company: entry.company,
               duration: entry.duration,
-              errorMessage: entry.errorMessage,
+              errorMessage: entry.errorMessage ? redactAuditText(entry.errorMessage) : undefined,
             }),
             userId: this.context.userId,
             companyId: this.context.companyId,
@@ -304,23 +304,32 @@ export class CommandFlowMCPServer {
   private describeSchema(schema: z.ZodTypeAny): Record<string, unknown> {
     if (schema instanceof z.ZodObject) {
       const shape = schema.shape;
-      const properties = Object.fromEntries(
-        Object.entries(shape).map(([key, value]) => [key, this.describeSchema(value as z.ZodTypeAny)])
-      );
+      const properties = Object.fromEntries(Object.entries(shape).map(([key, value]) => {
+        const description = this.describeSchema(value as z.ZodTypeAny);
+        return [key, description];
+      }));
 
       return {
         type: "object",
         properties,
-        required: Object.keys(shape),
+        required: Object.entries(properties)
+          .filter(([, value]) => !(value as { optional?: boolean }).optional)
+          .map(([key]) => key),
       };
     }
 
     if (schema instanceof z.ZodOptional || schema instanceof z.ZodNullable) {
-      return this.describeSchema((schema as z.ZodOptional<z.ZodTypeAny> | z.ZodNullable<z.ZodTypeAny>).unwrap());
+      return {
+        ...this.describeSchema((schema as z.ZodOptional<z.ZodTypeAny> | z.ZodNullable<z.ZodTypeAny>).unwrap()),
+        optional: true,
+      };
     }
 
     if (schema instanceof z.ZodDefault) {
-      return this.describeSchema((schema as z.ZodDefault<z.ZodTypeAny>).removeDefault());
+      return {
+        ...this.describeSchema((schema as z.ZodDefault<z.ZodTypeAny>).removeDefault()),
+        optional: true,
+      };
     }
 
     if (schema instanceof z.ZodArray) {
@@ -375,8 +384,6 @@ export class CommandFlowMCPServer {
         return 4;
       case Permission.MANAGER:
         return 3;
-      case Permission.EMPLOYEE:
-        return 2;
       case Permission.VIEWER:
       default:
         return 1;
