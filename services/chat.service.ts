@@ -10,6 +10,7 @@ interface ChatRequest {
   message: string;
   userId: string;
   companyId: string;
+  mfaChallengeToken?: string;
 }
 
 function toPermission(role: UserRole | string): Permission | string {
@@ -66,7 +67,7 @@ function buildExecutionPayload(
 }
 
 export async function processChat(data: ChatRequest) {
-  const { conversationId, message, userId, companyId } = data;
+  const { conversationId, message, userId, companyId, mfaChallengeToken } = data;
 
   const conversation = await prisma.conversation.findFirst({
     where: {
@@ -104,7 +105,7 @@ export async function processChat(data: ChatRequest) {
     throw new Error("User not found.");
   }
 
-  const server = createCommandServer(userId, companyId, toPermission(user.role));
+  const server = createCommandServer(userId, companyId, toPermission(user.role), mfaChallengeToken);
   const parsedCommand = await parseCommand(message, server);
 
   const startedAt = Date.now();

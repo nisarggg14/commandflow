@@ -1,49 +1,66 @@
+require("dotenv").config();
+
 const { PrismaClient } = require("@prisma/client");
 const bcrypt = require("bcrypt");
 
 const prisma = new PrismaClient();
 
-function requireEnv(name) {
+const DEFAULT_COMPANY_NAME = "Default Company";
+const DEFAULT_COMPANY_SLUG = "default-company";
+const DEFAULT_ADMIN_EMAIL = "admin@commandflow.com";
+const DEFAULT_ADMIN_NAME = "Admin";
+
+function readEnv(name, fallback) {
   const value = process.env[name];
-  if (!value || value.trim().length === 0) {
-    throw new Error(`Missing required environment variable: ${name}`);
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
   }
-  return value;
+  return fallback;
 }
 
 async function main() {
-  const adminExists = await prisma.user.findFirst({
-    where: { role: "ADMIN" },
-  });
-
-  if (adminExists) {
-    console.error("Bootstrap rejected: an ADMIN already exists.");
-    process.exitCode = 1;
-    return;
-  }
-
-  const name = requireEnv("COMMANDER_BOOTSTRAP_NAME");
-  const email = requireEnv("COMMANDER_BOOTSTRAP_EMAIL");
-  const password = requireEnv("COMMANDER_BOOTSTRAP_PASSWORD");
-
-  const company = await prisma.company.findFirst();
-  if (!company) {
-    throw new Error("No company exists. Create a company before bootstrapping the first admin.");
-  }
-
-  const hashedPassword = await bcrypt.hash(password, 10);
-
-  await prisma.user.create({
-    data: {
-      name,
-      email,
-      password: hashedPassword,
-      role: "ADMIN",
-      companyId: company.id,
+  const company = await prisma.company.upsert({
+    where: { slug: DEFAULT_COMPANY_SLUG },
+    update: {
+      name: DEFAULT_COMPANY_NAME,
+    },
+    create: {
+      name: DEFAULT_COMPANY_NAME,
+      slug: DEFAULT_COMPANY_SLUG,
     },
   });
 
-  console.log("First admin bootstrap successful.");
+  const adminEmail = readEnv("COMMANDER_BOOTSTRAP_EMAIL", DEFAULT_ADMIN_EMAIL);
+  const adminName = readEnv("COMMANDER_BOOTSTRAP_NAME", DEFAULT_ADMIN_NAME);
+  const adminPassword = readEnv("COMMANDER_BOOTSTRAP_PASSWORD", "admin123");
+
+  let adminUser = await prisma.user.findUnique({
+    where: { email: adminEmail },
+  });
+
+  if (!adminUser) {
+    const hashedPassword = await bcrypt.hash(adminPassword, 10);
+    adminUser = await prisma.user.create({
+      data: {
+        name: adminName,
+        email: adminEmail,
+        password: hashedPassword,
+        role: "ADMIN",
+        companyId: company.id,
+      },
+    });
+  } else {
+    adminUser = await prisma.user.update({
+      where: { id: adminUser.id },
+      data: {
+        name: adminName,
+        role: "ADMIN",
+        companyId: company.id,
+      },
+    });
+  }
+
+  console.log(`Demo environment ready. Company ensured: ${company.name} (${company.slug}). Admin ensured: ${adminUser.email}.`);
 }
 
 main()

@@ -214,13 +214,39 @@ export async function getProduct(productId: string): Promise<InventoryProduct> {
 }
 
 export async function getInventorySummary(category?: string): Promise<InventorySummaryResponse> {
-  const params = new URLSearchParams();
-  if (category && category.trim()) {
-    params.set("category", category.trim());
-  }
+  const products = await getProducts();
+  const filteredProducts = category && category.trim()
+    ? products.filter((product) => product.category.toLowerCase() === category.trim().toLowerCase())
+    : products;
+  const byCategory = Object.fromEntries(
+    filteredProducts.reduce((counts, product) => {
+      counts.set(product.category, (counts.get(product.category) ?? 0) + 1);
+      return counts;
+    }, new Map<string, number>())
+  );
+  const byStatus = Object.fromEntries(
+    filteredProducts.reduce((counts, product) => {
+      counts.set(product.status, (counts.get(product.status) ?? 0) + 1);
+      return counts;
+    }, new Map<string, number>())
+  );
+  const totalStock = filteredProducts.reduce(
+    (total, product) => total + product.variants.reduce((sum, variant) => sum + Number(variant.stock ?? 0), 0),
+    0
+  );
 
-  const query = params.toString();
-  return inventoryRequest<InventorySummaryResponse>(`/products/summary${query ? `?${query}` : ""}`, { method: "GET" }, true);
+  return {
+    totalProducts: filteredProducts.length,
+    activeProducts: filteredProducts.filter((product) => product.status.toLowerCase() === "active").length,
+    inactiveProducts: filteredProducts.filter((product) => product.status.toLowerCase() !== "active").length,
+    totalVariants: filteredProducts.reduce((total, product) => total + product.variants.length, 0),
+    totalStock,
+    lowStockCount: filteredProducts.filter((product) =>
+      product.variants.reduce((sum, variant) => sum + Number(variant.stock ?? 0), 0) <= 10
+    ).length,
+    byCategory,
+    byStatus,
+  };
 }
 
 export async function getLowStockReport(threshold = 10, category?: string): Promise<InventoryLowStockReport> {
@@ -284,9 +310,15 @@ export async function updateStock(
     throw new Error("A target stock value or delta is required.");
   }
 
-  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}/stock`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
+  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      variants: [{
+        sku: payload.sku,
+        id: payload.variantId,
+        stock: payload.stock,
+      }],
+    }),
   }, true);
 }
 
@@ -312,9 +344,15 @@ export async function reduceProductPrice(
     throw new Error("A price value, percentage reduction, or amount reduction is required.");
   }
 
-  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}/price`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
+  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      variants: [{
+        sku: payload.sku,
+        id: payload.variantId,
+        price: payload.price,
+      }],
+    }),
   }, true);
 }
 

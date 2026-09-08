@@ -13,6 +13,7 @@ export async function POST(req: NextRequest) {
       message: body.message,
       userId: authUser.id,
       companyId: authUser.companyId,
+      mfaChallengeToken: typeof body.mfaChallengeToken === "string" ? body.mfaChallengeToken : undefined,
     });
 
     return NextResponse.json(result);

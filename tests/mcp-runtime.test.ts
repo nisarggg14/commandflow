@@ -47,15 +47,51 @@ test("viewer mutation execution is denied by MCP authorization", () => {
   assert.throws(() => server.authorize(createProduct), /does not have permission/i);
 });
 
-test("orders are not exposed and price changes are high risk", () => {
+test("orders are not exposed and price changes are medium risk without step-up MFA", () => {
   const tools = createDefaultTools();
   const names = tools.map((tool) => tool.name);
   const adjustPrice = tools.find((tool) => tool.name === "products.adjustPrice");
+  const updateStock = tools.find((tool) => tool.name === "products.updateStock");
 
   assert.ok(!names.some((name) => name.startsWith("orders.")));
-  assert.equal(adjustPrice?.riskLevel, "HIGH");
-  assert.equal(adjustPrice?.requiresMfaStepUp, true);
+  assert.equal(adjustPrice?.riskLevel, "MEDIUM");
+  assert.equal(adjustPrice?.requiresMfaStepUp, false);
   assert.equal(adjustPrice?.mfaPurpose, "products.adjustPrice");
+  assert.equal(updateStock?.riskLevel, "MEDIUM");
+  assert.equal(updateStock?.requiresMfaStepUp, false);
+});
+
+test("user queries omit password and MFA secrets", async () => {
+  const getUsersTool = createDefaultTools().find((tool) => tool.name === "users.getUsers");
+  assert.ok(getUsersTool);
+
+  const result = await getUsersTool.execute({ limit: 10, offset: 0 }, {
+    userId: "u1",
+    companyId: "c1",
+    role: Permission.ADMIN,
+    requestId: "r1",
+    timestamp: new Date().toISOString(),
+    prisma: {
+      user: {
+        findMany: async () => [{
+          id: "u1",
+          name: "Admin",
+          email: "admin@example.com",
+          role: "ADMIN",
+          password: "$2b$10$hash",
+          mfaEnabled: true,
+          mfaSecret: "secret",
+          companyId: "c1",
+        }],
+      },
+    } as any,
+    logger: () => undefined,
+  });
+
+  assert.ok(Array.isArray(result));
+  assert.ok(!Object.prototype.hasOwnProperty.call(result[0], "password"));
+  assert.ok(!Object.prototype.hasOwnProperty.call(result[0], "mfaSecret"));
+  assert.equal(result[0].email, "admin@example.com");
 });
 
 test("UI tools use strict allowlists", () => {

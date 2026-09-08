@@ -3,12 +3,18 @@ import { CommandFlowMCPServer } from "@/mcp/server";
 import { createDefaultTools } from "@/mcp/tools";
 import { Permission } from "@/mcp/types";
 
-export function createCommandServer(userId: string, companyId: string, role: Permission | string) {
+export function createCommandServer(
+  userId: string,
+  companyId: string,
+  role: Permission | string,
+  mfaChallengeToken?: string
+) {
   const context = createMcpContext({
     userId,
     companyId,
     role,
     logger: () => undefined,
+    mfaChallengeToken,
   });
 
   const server = new CommandFlowMCPServer(context);

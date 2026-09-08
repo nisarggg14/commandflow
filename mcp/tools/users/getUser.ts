@@ -20,6 +20,16 @@ export function createGetUserTool(): MCPTool {
           id: userId,
           companyId: context.companyId,
         },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          mfaEnabled: true,
+          companyId: true,
+          createdAt: true,
+          updatedAt: true,
+        },
       });
     },
   };

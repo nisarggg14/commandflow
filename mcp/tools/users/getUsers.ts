@@ -16,6 +16,16 @@ export function createGetUsersTool(): MCPTool {
 
       return context.prisma.user.findMany({
         where: { companyId: context.companyId },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          mfaEnabled: true,
+          companyId: true,
+          createdAt: true,
+          updatedAt: true,
+        },
         take: limit,
         skip: offset,
         orderBy: { createdAt: "desc" },

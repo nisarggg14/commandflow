@@ -32,6 +32,12 @@ interface Conversation {
   messages: Message[]
 }
 
+interface PendingMfaRequest {
+  conversationId: string
+  message: string
+  toolName?: string
+}
+
 function parseExecutionPayload(content: string): CommandExecutionPayload | null {
   try {
     const parsed = JSON.parse(content) as CommandExecutionPayload
@@ -80,6 +86,10 @@ export default function Page() {
   const [activeConversationId, setActiveConversationId] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const [pendingMfaRequest, setPendingMfaRequest] = useState<PendingMfaRequest | null>(null)
+  const [mfaCode, setMfaCode] = useState('')
+  const [mfaError, setMfaError] = useState('')
+  const [mfaLoading, setMfaLoading] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -145,25 +155,30 @@ export default function Page() {
     setSidebarOpen(false)
   }
 
-  const handleSendMessage = async (message: string) => {
+  const handleSendMessage = async (
+    message: string,
+    options?: { mfaChallengeToken?: string; skipUserMessage?: boolean }
+  ) => {
     if (!activeConversationId) return
 
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: message,
-    }
+    if (!options?.skipUserMessage) {
+      const userMessage: Message = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: message,
+      }
 
-    setConversations((prev) =>
-      prev.map((c) =>
-        c.id === activeConversationId
-          ? {
-              ...c,
-              messages: [...c.messages, userMessage],
-            }
-          : c
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === activeConversationId
+            ? {
+                ...c,
+                messages: [...c.messages, userMessage],
+              }
+            : c
+        )
       )
-    )
+    }
 
     setIsLoading(true)
 
@@ -176,6 +191,7 @@ export default function Page() {
       body: JSON.stringify({
         conversationId: activeConversationId,
         message,
+        mfaChallengeToken: options?.mfaChallengeToken,
       }),
     })
 
@@ -201,8 +217,24 @@ export default function Page() {
     }
 
     try {
-      const payload = JSON.parse(data.response) as CommandExecutionPayload
+      const payload = JSON.parse(data.response) as CommandExecutionPayload & { message?: string }
       applyUiControl(payload.data)
+
+      if (
+        payload.status === 'FAILED' &&
+        typeof payload.message === 'string' &&
+        (payload.message.includes('requires step-up MFA verification') ||
+          payload.message.includes('requires a valid step-up MFA challenge'))
+      ) {
+        setPendingMfaRequest({
+          conversationId: activeConversationId,
+          message,
+          toolName: payload.toolName ?? undefined,
+        })
+        setMfaCode('')
+        setMfaError('')
+        return
+      }
     } catch {
       // Render malformed or non-command responses as normal assistant content.
     }
@@ -225,6 +257,54 @@ export default function Page() {
     )
   }
 
+  const handleVerifyMfa = async () => {
+    if (!pendingMfaRequest) return
+
+    setMfaLoading(true)
+    setMfaError('')
+
+    const res = await fetch('/api/auth/mfa/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        code: mfaCode,
+        purpose: pendingMfaRequest.toolName || 'step-up-mfa',
+        riskLevel: 'HIGH',
+      }),
+    })
+
+    const data = await res.json()
+
+    setMfaLoading(false)
+
+    if (!res.ok || !data.success) {
+      setMfaError(data.message || 'Invalid MFA code')
+      return
+    }
+
+    const challengeToken = data.challenge?.challengeToken
+    if (!challengeToken) {
+      setMfaError('MFA verification failed.')
+      return
+    }
+
+    setPendingMfaRequest(null)
+    setMfaCode('')
+    await handleSendMessage(pendingMfaRequest.message, {
+      mfaChallengeToken: challengeToken,
+      skipUserMessage: true,
+    })
+  }
+
+  const handleCancelMfa = () => {
+    setPendingMfaRequest(null)
+    setMfaCode('')
+    setMfaError('')
+  }
+
   const handleSuggestionClick = (suggestion: string) => {
     handleSendMessage(suggestion)
   }
@@ -242,6 +322,55 @@ export default function Page() {
 
       <div className="flex flex-col flex-1 w-full md:w-0">
         <TopBar title={activeConversation?.title || 'CommandFlow'} user={authUser} />
+
+        {pendingMfaRequest && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div role="dialog" aria-modal="true" className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-xl">
+              <h2 className="text-xl font-semibold text-foreground">MFA Verification Required</h2>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Enter the 6-digit code from your authenticator app to continue this high-risk action.
+              </p>
+
+              <div className="mt-4">
+                <label htmlFor="mfa-code" className="text-sm font-medium text-foreground">
+                  6-digit code
+                </label>
+                <input
+                  id="mfa-code"
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={mfaCode}
+                  onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground outline-none ring-0 placeholder:text-muted-foreground focus:border-ring"
+                  placeholder="123456"
+                />
+              </div>
+
+              {mfaError ? (
+                <p className="mt-3 text-sm text-red-600">{mfaError}</p>
+              ) : null}
+
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={handleCancelMfa}
+                  className="rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium text-foreground"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleVerifyMfa}
+                  disabled={mfaLoading || mfaCode.length !== 6}
+                  className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {mfaLoading ? 'Verifying…' : 'Verify'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-4xl mx-auto px-4 md:px-6 py-8">
