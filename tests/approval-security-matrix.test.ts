@@ -15,6 +15,8 @@ import {
 } from "../services/approval.service";
 import { createChallengeToken, verifyTotpCode, createTotpSecret, validateAndConsumeMfaChallenge, decryptSecret } from "../lib/mfa";
 import { ApprovalStatus } from "@prisma/client";
+import { NextRequest } from "next/server";
+import { GET as getApprovalsRoute } from "../app/api/approvals/route";
 
 async function createUserSet() {
   const company = await prisma.company.create({
@@ -166,8 +168,8 @@ test("3. Admin can approve", async () => {
 });
 
 test("4. Unauthenticated user cannot access approvals", async () => {
-  const req = new Request("http://localhost/api/approvals");
-  const result = await fetch(req);
+  const req = new NextRequest("http://localhost/api/approvals");
+  const result = await getApprovalsRoute(req);
   assert.equal(result.status, 401);
 });
 
@@ -618,6 +620,9 @@ test.after(async () => {
   await prisma.activityLog.deleteMany({});
   await prisma.approval.deleteMany({});
   await prisma.mfaChallenge.deleteMany({});
+  await prisma.message.deleteMany({}).catch(() => {});
+  await prisma.conversation.deleteMany({}).catch(() => {});
+  await prisma.application.deleteMany({}).catch(() => {});
   await prisma.session.deleteMany({});
   await prisma.user.deleteMany({});
   await prisma.company.deleteMany({});

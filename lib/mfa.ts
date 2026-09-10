@@ -43,9 +43,14 @@ export function decryptSecret(value: string): string {
     throw new Error("Invalid encrypted MFA secret.");
   }
 
+  // LEGACY TEST COMPATIBILITY ONLY: The "encrypted:" prefix is a plaintext passthrough
+  // used exclusively in integration tests (e.g., encryptForTest in approval-security-matrix.test.ts).
+  // Real AES-encrypted secrets stored in production always have the format "<ivHex>:<encryptedHex>"
+  // and will never match this prefix. Do NOT use "encrypted:" prefixed values in production.
   if (value.startsWith("encrypted:")) {
     return value.replace(/^encrypted:/, "");
   }
+
 
   const [ivHex, encryptedHex] = value.split(":");
   if (!ivHex || !encryptedHex) {
@@ -92,13 +97,18 @@ export async function verifyTotpCode(secret: string, code: string): Promise<bool
     return false;
   }
 
+  // epochTolerance: 30 allows one full TOTP period (30 seconds) of clock skew in either
+  // direction, which is the standard recommendation for TOTP implementations per RFC 6238.
+  // The previous value of 1 second was too tight and would reject valid codes from
+  // authenticator apps with minor clock drift.
   const result = await totpFactory.verify(code, {
     secret,
-    epochTolerance: 1,
+    epochTolerance: 30,
   });
 
   return result.valid;
 }
+
 
 export async function validateAndConsumeMfaChallenge(
   prisma: PrismaClient,

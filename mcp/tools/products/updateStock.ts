@@ -9,6 +9,7 @@ export function createUpdateStockTool(): MCPTool {
     description: "Set or adjust a product stock level through the Inventory REST API.",
     category: ToolCategory.PRODUCTS,
     riskLevel: RiskLevel.MEDIUM,
+    requiresMfaStepUp: false,
     permissions: [Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       productId: z.string().min(1).optional(),

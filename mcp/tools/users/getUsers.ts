@@ -14,7 +14,7 @@ export function createGetUsersTool(): MCPTool {
     async execute(input, context) {
       const { limit = 50, offset = 0 } = input as { limit?: number; offset?: number };
 
-      return context.prisma.user.findMany({
+      const users = await context.prisma.user.findMany({
         where: { companyId: context.companyId },
         select: {
           id: true,
@@ -29,6 +29,11 @@ export function createGetUsersTool(): MCPTool {
         take: limit,
         skip: offset,
         orderBy: { createdAt: "desc" },
+      });
+
+      return users.map((u: any) => {
+        const { password: _p, mfaSecret: _m, ...safeUser } = u;
+        return safeUser;
       });
     },
   };

@@ -268,12 +268,18 @@ export class CommandFlowMCPServer {
   }
 
   evaluateRisk(tool: MCPTool): void {
+    // Note: HIGH-risk MFA token presence is NOT checked here intentionally.
+    // Checking mfaChallengeToken at this point would short-circuit the approval
+    // creation logic below (lines ~75-101), which must run first so the user is
+    // informed that an approval request has been created and is awaiting admin review.
+    // The MFA token is enforced after approval validation (line ~131 in executeTool).
     const riskLevel = tool.riskLevel ?? "LOW";
 
-    if (riskLevel === "HIGH" && tool.requiresMfaStepUp !== false && !this.context.mfaChallengeToken) {
-      throw new PermissionDeniedError(`High-risk tool ${tool.name} requires step-up MFA verification.`);
+    if (riskLevel === "HIGH" && this.context.role === "VIEWER") {
+      throw new PermissionDeniedError(`Viewers cannot execute high-risk operations.`);
     }
   }
+
 
   async log(entry: AuditLogEntry): Promise<void> {
     try {

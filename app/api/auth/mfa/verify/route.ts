@@ -4,10 +4,20 @@ import { UnauthorizedError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { verifyTotpCode, createChallengeToken, decryptSecret } from "@/lib/mfa";
 
+// Security: purpose and riskLevel are server-assigned and must NOT be accepted from the
+// client. The client supplies only the TOTP code. Accepting a client-supplied purpose
+// would allow a client to forge a challenge for any arbitrary security context (e.g.,
+// mimicking an approval-specific purpose like "approval:<id>:approve").
+const SERVER_MFA_PURPOSE = "step-up-mfa";
+const SERVER_MFA_RISK_LEVEL = "HIGH";
+
 export async function POST(req: NextRequest) {
   try {
     const authUser = authenticate(req);
-    const { code, challengeToken, purpose, riskLevel } = await req.json();
+
+    // Only accept `code` and `challengeToken` from the client.
+    // `purpose` and `riskLevel` are intentionally ignored — they are server-controlled.
+    const { code, challengeToken } = await req.json();
 
     if (!code || typeof code !== "string") {
       return NextResponse.json({ success: false, message: "A 6-digit MFA code is required." }, { status: 400 });
@@ -26,23 +36,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, message: "Invalid MFA code." }, { status: 401 });
     }
 
-    const finalPurpose = typeof purpose === "string" && purpose.trim().length > 0 ? purpose.trim() : "step-up-mfa";
-    const finalRiskLevel = typeof riskLevel === "string" && riskLevel.trim().length > 0 ? riskLevel.trim().toUpperCase() : "HIGH";
-
-    if (!["LOW", "MEDIUM", "HIGH"].includes(finalRiskLevel)) {
-      return NextResponse.json({ success: false, message: "Invalid step-up MFA risk level." }, { status: 400 });
-    }
-
-    let finalChallengeToken = challengeToken;
-    if (!finalChallengeToken || typeof finalChallengeToken !== "string") {
-      finalChallengeToken = createChallengeToken();
-    }
+    // Generate a challenge token if the client did not supply one.
+    const finalChallengeToken =
+      typeof challengeToken === "string" && challengeToken.trim().length > 0
+        ? challengeToken.trim()
+        : createChallengeToken();
 
     const challenge = await prisma.mfaChallenge.create({
       data: {
         userId: authUser.id,
-        purpose: finalPurpose,
-        riskLevel: finalRiskLevel,
+        // Server-assigned: purpose and risk level cannot be overridden by the client.
+        purpose: SERVER_MFA_PURPOSE,
+        riskLevel: SERVER_MFA_RISK_LEVEL,
         challengeToken: finalChallengeToken,
         expiresAt: new Date(Date.now() + 5 * 60 * 1000),
         verifiedAt: null,
@@ -67,3 +72,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: error instanceof Error ? error.message : "Verification failed." }, { status: 500 });
   }
 }
+

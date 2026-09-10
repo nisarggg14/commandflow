@@ -39,6 +39,11 @@ enum ApprovalStatus {
   EXECUTED
 }
 
+enum ClientStatus {
+  ACTIVE
+  INACTIVE
+}
+
 model Company {
   id          String   @id @default(cuid())
   name        String
@@ -48,11 +53,12 @@ model Company {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  users         User[]
-  applications  Application[]
-  conversations Conversation[]
-  activityLogs  ActivityLog[]
-  approvals     Approval[]
+  users            User[]
+  applications     Application[]
+  connectedClients ConnectedClient[]
+  conversations    Conversation[]
+  activityLogs     ActivityLog[]
+  approvals        Approval[]
 }
 
 model User {
@@ -102,10 +108,17 @@ model Conversation {
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
+  connectedClientId String?
+  connectedClient   ConnectedClient? @relation(fields: [connectedClientId], references: [id], onDelete: SetNull)
+
   messages Message[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([connectedClientId])
 }
 
 model Message {
@@ -119,6 +132,31 @@ model Message {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
+}
+
+model ConnectedClient {
+  id          String       @id @default(cuid())
+
+  name        String
+  slug        String
+  description String?
+  status      ClientStatus @default(ACTIVE)
+  baseUrl     String
+  authType    String       @default("BEARER")
+  authConfig  String?      @db.Text
+
+  companyId   String
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  conversations Conversation[]
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([companyId, slug])
+  @@index([companyId])
+  @@index([status])
+  @@index([slug])
 }
 
 model Application {
