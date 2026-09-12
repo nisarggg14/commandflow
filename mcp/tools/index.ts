@@ -24,7 +24,12 @@ import { createGetThemeTool } from "./ui/getTheme";
 import { createSetThemeTool } from "./ui/setTheme";
 import { createSetBackgroundTool } from "./ui/setBackground";
 import { createSetAccentColorTool } from "./ui/setAccentColor";
-import type { MCPTool } from "../types";
+import { createUpdateBackgroundTool } from "./frontend/updateBackground";
+import { createUpdateThemeTool } from "./frontend/updateTheme";
+import { createUpdateNavbarTool } from "./frontend/updateNavbar";
+import { createUpdateBrandingTool } from "./frontend/updateBranding";
+import { RiskLevel, type MCPTool } from "../types";
+import { CLIENT_TOOL_NAMES } from "../client-tool-policy";
 
 export function createDefaultTools(): MCPTool[] {
   return [
@@ -54,7 +59,18 @@ export function createDefaultTools(): MCPTool[] {
     createSetThemeTool(),
     createSetBackgroundTool(),
     createSetAccentColorTool(),
+    createUpdateBackgroundTool(),
+    createUpdateThemeTool(),
+    createUpdateNavbarTool(),
+    createUpdateBrandingTool(),
   ];
+}
+
+export function createToolsForClient(enabledToolNames?: readonly string[]): MCPTool[] {
+  const enabled = new Set(enabledToolNames ?? CLIENT_TOOL_NAMES);
+  return createDefaultTools()
+    .filter((tool) => enabled.has(tool.name))
+    .map((tool) => ({ ...tool, riskLevel: tool.riskLevel ?? RiskLevel.LOW }));
 }
 
 export {

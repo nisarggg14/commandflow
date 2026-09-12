@@ -11,6 +11,7 @@ interface CreateMcpContextOptions {
   logger?: MCPLogger;
   mfaChallengeToken?: string;
   mfaVerified?: boolean;
+  connectedClientId?: string;
 }
 
 export function createMcpContext({
@@ -22,6 +23,7 @@ export function createMcpContext({
   logger,
   mfaChallengeToken,
   mfaVerified,
+  connectedClientId,
 }: CreateMcpContextOptions): MCPContext {
   return {
     userId,
@@ -33,5 +35,6 @@ export function createMcpContext({
     logger: logger ?? (() => undefined),
     mfaChallengeToken,
     mfaVerified,
+    connectedClientId,
   };
 }

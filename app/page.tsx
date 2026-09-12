@@ -8,6 +8,7 @@ import { ChatInput } from '@/components/chat-input'
 import { MessageBubble } from '@/components/message-bubble'
 import { EmptyState } from '@/components/empty-state'
 import { CommandExecutionCard, type CommandExecutionPayload } from '@/components/command-execution-card'
+import { ConnectedClientSwitcher } from '@/components/connected-client-switcher'
 
 interface AuthUser {
   id: string
@@ -30,6 +31,14 @@ interface Conversation {
   id: string
   title: string
   messages: Message[]
+  connectedClientId?: string | null
+}
+
+interface ConnectedClient {
+  id: string
+  name: string
+  slug: string
+  status: string
 }
 
 interface PendingMfaRequest {
@@ -52,12 +61,22 @@ type UiControl =
   | { type: 'ui-control'; action: 'setTheme'; theme: 'light' | 'dark' | 'system' }
   | { type: 'ui-control'; action: 'setBackground'; background: 'obsidian' | 'paper' | 'mist' }
   | { type: 'ui-control'; action: 'setAccentColor'; accent: 'mint' | 'sky' | 'amber' }
+  | { type: 'frontend-control'; action: 'updateBackground'; background: 'obsidian' | 'paper' | 'mist' }
+  | { type: 'frontend-control'; action: 'updateTheme'; theme: 'light' | 'dark' | 'system' }
+  | { type: 'frontend-control'; action: 'updateNavbar'; density: 'comfortable' | 'compact'; showCompanyName: boolean }
+  | { type: 'frontend-control'; action: 'updateBranding'; accent: 'mint' | 'sky' | 'amber'; mark: 'commandflow' | 'inventory' }
 
 function applyUiControl(value: unknown) {
-  if (!value || typeof value !== 'object' || !('type' in value) || value.type !== 'ui-control') return
+  if (!value || typeof value !== 'object' || !('type' in value) || (value.type !== 'ui-control' && value.type !== 'frontend-control')) return
 
   const control = value as UiControl
   const root = document.documentElement
+
+  if (control.type === 'frontend-control' && control.action === 'updateTheme') {
+    root.classList.toggle('dark', control.theme === 'dark')
+    root.classList.toggle('light', control.theme === 'light')
+    if (control.theme === 'system') root.classList.remove('dark', 'light')
+  }
 
   if (control.action === 'setTheme') {
     root.classList.toggle('dark', control.theme === 'dark')
@@ -77,6 +96,24 @@ function applyUiControl(value: unknown) {
     root.style.setProperty('--ring', accent)
     root.style.setProperty('--primary', accent)
   }
+
+  if (control.type === 'frontend-control' && control.action === 'updateBackground') {
+    const backgrounds = { obsidian: '#0a0a0a', paper: '#f7f5ef', mist: '#e8f0f2' } as const
+    root.style.setProperty('--background', backgrounds[control.background])
+  }
+
+  if (control.type === 'frontend-control' && control.action === 'updateNavbar') {
+    root.dataset.navbarDensity = control.density
+    root.dataset.showCompanyName = String(control.showCompanyName)
+  }
+
+  if (control.type === 'frontend-control' && control.action === 'updateBranding') {
+    const accents = { mint: '#10a37f', sky: '#0284c7', amber: '#d97706' } as const
+    root.style.setProperty('--accent', accents[control.accent])
+    root.style.setProperty('--ring', accents[control.accent])
+    root.style.setProperty('--primary', accents[control.accent])
+    root.dataset.brandMark = control.mark
+  }
 }
 
 export default function Page() {
@@ -90,6 +127,8 @@ export default function Page() {
   const [mfaCode, setMfaCode] = useState('')
   const [mfaError, setMfaError] = useState('')
   const [mfaLoading, setMfaLoading] = useState(false)
+  const [connectedClients, setConnectedClients] = useState<ConnectedClient[]>([])
+  const [activeConnectedClientId, setActiveConnectedClientId] = useState<string | undefined>()
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -120,6 +159,17 @@ export default function Page() {
 
       const data = await res.json()
       setAuthUser(data.user)
+
+      const clientsRes = await fetch('/api/connected-clients?status=ACTIVE', {
+        credentials: 'include',
+      })
+      if (clientsRes.ok) {
+        const clientsData = await clientsRes.json()
+        const clients = Array.isArray(clientsData.connectedClients)
+          ? clientsData.connectedClients as ConnectedClient[]
+          : []
+        setConnectedClients(clients)
+      }
     }
 
     void loadUser()
@@ -144,6 +194,7 @@ export default function Page() {
       id: data.id,
       title: data.title,
       messages: [],
+      connectedClientId: data.connectedClientId ?? null,
     }
 
     setConversations((prev) => [...prev, conversation])
@@ -152,7 +203,19 @@ export default function Page() {
 
   const handleSelectConversation = (id: string) => {
     setActiveConversationId(id)
+    const conversation = conversations.find((item) => item.id === id)
+    const selectedId = conversation?.connectedClientId ?? undefined
+    setActiveConnectedClientId(selectedId && connectedClients.some((client) => client.id === selectedId) ? selectedId : undefined)
     setSidebarOpen(false)
+  }
+
+  const handleConnectedClientChange = (clientId?: string) => {
+    setActiveConnectedClientId(clientId)
+    setConversations((prev) => prev.map((conversation) => (
+      conversation.id === activeConversationId
+        ? { ...conversation, connectedClientId: clientId ?? null }
+        : conversation
+    )))
   }
 
   const handleSendMessage = async (
@@ -192,6 +255,7 @@ export default function Page() {
         conversationId: activeConversationId,
         message,
         mfaChallengeToken: options?.mfaChallengeToken,
+        connectedClientId: activeConnectedClientId ?? null,
       }),
     })
 
@@ -200,6 +264,10 @@ export default function Page() {
     setIsLoading(false)
 
     if (!data.success) {
+      if (data.message === 'Selected connected client is unavailable.') {
+        setActiveConnectedClientId(undefined)
+        setConnectedClients((prev) => prev.filter((client) => client.id !== activeConnectedClientId))
+      }
       const errorMessage: Message = {
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -215,6 +283,13 @@ export default function Page() {
       )
       return
     }
+
+    setActiveConnectedClientId(data.connectedClientId ?? undefined)
+    setConversations((prev) => prev.map((conversation) => (
+      conversation.id === activeConversationId
+        ? { ...conversation, connectedClientId: data.connectedClientId ?? null }
+        : conversation
+    )))
 
     try {
       const payload = JSON.parse(data.response) as CommandExecutionPayload & { message?: string }
@@ -322,6 +397,15 @@ export default function Page() {
 
       <div className="flex flex-col flex-1 w-full md:w-0">
         <TopBar title={activeConversation?.title || 'CommandFlow'} user={authUser} />
+
+        <div className="flex items-center justify-end border-b border-border bg-background px-4 py-2 md:px-6">
+          <ConnectedClientSwitcher
+            clients={connectedClients}
+            selectedClientId={activeConnectedClientId}
+            disabled={isLoading}
+            onChange={handleConnectedClientChange}
+          />
+        </div>
 
         {pendingMfaRequest && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">

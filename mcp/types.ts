@@ -33,6 +33,7 @@ export interface MCPContext {
   logger: MCPLogger;
   mfaVerified?: boolean;
   mfaChallengeToken?: string;
+  connectedClientId?: string;
 }
 
 export interface AuditLogEntry {

@@ -1,4 +1,13 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 type InventoryRole = "admin" | "manager" | "viewer";
+
+export interface InventoryApiConnection {
+  baseUrl: string;
+  authType: "NONE" | "BEARER" | "API_KEY" | "BASIC";
+  authConfig: Record<string, string>;
+  timeoutMs?: number;
+}
 
 interface InventoryAuthResponse {
   token: string;
@@ -59,6 +68,15 @@ export interface InventoryLowStockReport {
 
 const INVENTORY_BASE_URL = (process.env.INVENTORY_API_BASE_URL ?? "http://localhost:5000").replace(/\/+$/, "");
 
+const inventoryConnectionStorage = new AsyncLocalStorage<InventoryApiConnection>();
+
+export function runWithInventoryApiConnection<T>(
+  connection: InventoryApiConnection,
+  operation: () => Promise<T>
+): Promise<T> {
+  return inventoryConnectionStorage.run(connection, operation);
+}
+
 let inventoryToken: string | null = null;
 let inventoryTokenExpiresAt = 0;
 
@@ -113,7 +131,7 @@ async function getInventoryToken(): Promise<string> {
   return inventoryToken;
 }
 
-function normalizeInventoryError(status: number, payload?: unknown): Error {
+function normalizeInventoryError(status: number): Error {
   if (status === 401) {
     return new Error("Inventory authentication failed.");
   }
@@ -138,14 +156,39 @@ function normalizeInventoryError(status: number, payload?: unknown): Error {
     return new Error("Inventory service is currently unavailable.");
   }
 
-  if (payload && typeof payload === "object") {
-    const maybeMessage = "message" in payload ? payload.message : undefined;
-    if (typeof maybeMessage === "string" && maybeMessage.trim().length > 0) {
-      return new Error(maybeMessage);
-    }
-  }
-
   return new Error("Inventory request failed.");
+}
+
+function applyConnectedClientAuth(headers: Headers, connection: InventoryApiConnection) {
+  const authConfig = connection.authConfig;
+
+  switch (connection.authType) {
+    case "NONE":
+      return;
+    case "BEARER":
+      if (!authConfig.token) throw new Error("Connected client bearer credentials are unavailable.");
+      headers.set("Authorization", `Bearer ${authConfig.token}`);
+      return;
+    case "API_KEY": {
+      if (!authConfig.apiKey) throw new Error("Connected client API key credentials are unavailable.");
+      const headerName = authConfig.headerName || "X-API-Key";
+      if (!/^[A-Za-z0-9-]{1,64}$/.test(headerName) || /^(authorization|cookie|host|content-length)$/i.test(headerName)) {
+        throw new Error("Connected client API key header configuration is invalid.");
+      }
+      headers.set(headerName, authConfig.apiKey);
+      return;
+    }
+    case "BASIC":
+      if (!authConfig.username || !authConfig.password) throw new Error("Connected client basic credentials are unavailable.");
+      headers.set("Authorization", `Basic ${Buffer.from(`${authConfig.username}:${authConfig.password}`).toString("base64")}`);
+      return;
+  }
+}
+
+function validateInventoryPath(path: string) {
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("..")) {
+    throw new Error("Inventory request path is not allowed.");
+  }
 }
 
 async function inventoryRequest<T>(
@@ -153,7 +196,13 @@ async function inventoryRequest<T>(
   options: RequestInit = {},
   requireAuth = false
 ): Promise<T> {
-  const requestUrl = new URL(path, `${INVENTORY_BASE_URL}/`);
+  validateInventoryPath(path);
+  const connection = inventoryConnectionStorage.getStore();
+  const baseUrl = connection?.baseUrl ?? INVENTORY_BASE_URL;
+  const requestUrl = new URL(path.replace(/^\/+/, ""), `${baseUrl.replace(/\/+$/, "")}/`);
+  if (requestUrl.protocol !== "http:" && requestUrl.protocol !== "https:") {
+    throw new Error("Inventory base URL must use HTTP or HTTPS.");
+  }
 
   const headers = new Headers(options.headers ?? {});
 
@@ -161,16 +210,26 @@ async function inventoryRequest<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  for (let attempt = 0; attempt < (requireAuth ? 2 : 1); attempt += 1) {
-    if (requireAuth) {
+  const maxAttempts = connection ? 1 : (requireAuth ? 2 : 1);
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (connection && requireAuth) {
+      applyConnectedClientAuth(headers, connection);
+    } else if (requireAuth) {
       const token = await getInventoryToken();
       headers.set("Authorization", `Bearer ${token}`);
     }
 
-    const response = await fetch(requestUrl.toString(), {
-      ...options,
-      headers,
-    });
+    const signal = connection ? AbortSignal.timeout(connection.timeoutMs ?? 10_000) : options.signal;
+    let response: Response;
+    try {
+      response = await fetch(requestUrl.toString(), { ...options, headers, signal });
+    } catch (error) {
+      if (error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")) {
+        throw new Error("Connected client request timed out.");
+      }
+      throw new Error("Inventory service is unavailable.");
+    }
 
     const contentType = response.headers.get("content-type") ?? "";
     let payload: unknown = null;
@@ -188,7 +247,7 @@ async function inventoryRequest<T>(
     }
 
     if (!response.ok) {
-      throw normalizeInventoryError(response.status, payload);
+      throw normalizeInventoryError(response.status);
     }
 
     if (response.status === 204) {

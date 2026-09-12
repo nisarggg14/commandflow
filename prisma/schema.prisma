@@ -144,6 +144,7 @@ model ConnectedClient {
   baseUrl     String
   authType    String       @default("BEARER")
   authConfig  String?      @db.Text
+  enabledTools String?     @db.Text
 
   companyId   String
   company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)

@@ -16,6 +16,7 @@ import {
 } from "./types";
 import { InMemoryToolRegistry } from "./registry";
 import { redactAuditText } from "@/lib/audit-redaction";
+import { withAuthenticatedConnectedClient } from "@/services/mcp-connector.service";
 
 interface RuntimeMetrics {
   totalExecutions: number;
@@ -70,7 +71,13 @@ export class CommandFlowMCPServer {
       this.evaluateRisk(tool);
 
       let approvalId: string | null = null;
-      let approvalPurpose = tool.mfaPurpose ?? tool.name;
+      const baseApprovalPurpose = tool.mfaPurpose ?? tool.name;
+      // Bind approvals to the selected client as well as the tool and args.
+      // This prevents an approval granted for client A being replayed against
+      // client B when both expose the same tool.
+      const approvalPurpose = this.context.connectedClientId
+        ? `${baseApprovalPurpose}:client:${this.context.connectedClientId}`
+        : baseApprovalPurpose;
 
       if (riskLevel === "HIGH") {
         const existingApproval = await this.context.prisma.approval.findFirst({
@@ -143,7 +150,7 @@ export class CommandFlowMCPServer {
         mfaResult = "SUCCESS";
       }
 
-      const data = await tool.execute(parsedInput, this.context);
+      const data = await this.withConnectedClient(async () => tool.execute(parsedInput, this.context));
       const duration = Date.now() - startedAt;
 
       if (approvalId) {
@@ -235,6 +242,10 @@ export class CommandFlowMCPServer {
 
   metrics(): RuntimeMetrics {
     return { ...this.metricsState };
+  }
+
+  withConnectedClient<T>(operation: () => Promise<T>): Promise<T> {
+    return withAuthenticatedConnectedClient(this.context, operation);
   }
 
   validate(tool: MCPTool, input: unknown): unknown {

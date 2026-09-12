@@ -20,6 +20,8 @@ export interface ConsumeMfaChallengeInput {
   riskLevel?: string;
 }
 
+export const GENERIC_STEP_UP_MFA_PURPOSE = "step-up-mfa";
+
 function getEncryptionKey(): string {
   const key = process.env.MFA_ENCRYPTION_KEY;
 
@@ -131,7 +133,11 @@ export async function validateAndConsumeMfaChallenge(
       throw new Error("MFA challenge does not belong to this user.");
     }
 
-    if (challenge.purpose !== purpose) {
+    // The generic MFA endpoint can only prove possession of the user's TOTP
+    // before the server has parsed the requested operation. Bind that proof to
+    // the server-derived tool/approval purpose at consumption time. Existing
+    // purpose-specific challenges still require an exact match.
+    if (challenge.purpose !== purpose && challenge.purpose !== GENERIC_STEP_UP_MFA_PURPOSE) {
       throw new Error("MFA challenge purpose does not match this operation.");
     }
 
@@ -148,12 +154,23 @@ export async function validateAndConsumeMfaChallenge(
       throw new Error("MFA challenge risk does not match the requested operation.");
     }
 
-    return client.mfaChallenge.update({
-      where: { id: challenge.id },
+    const consumed = await client.mfaChallenge.updateMany({
+      where: {
+        id: challenge.id,
+        verifiedAt: null,
+        purpose: { in: [purpose, GENERIC_STEP_UP_MFA_PURPOSE] },
+      },
       data: {
+        purpose,
         verifiedAt: new Date(),
       },
     });
+
+    if (consumed.count !== 1) {
+      throw new Error("MFA challenge has already been consumed.");
+    }
+
+    return client.mfaChallenge.findUnique({ where: { id: challenge.id } });
   };
 
   if (typeof (prisma as any).$transaction === "function") {

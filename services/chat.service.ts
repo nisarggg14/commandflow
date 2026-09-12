@@ -4,6 +4,7 @@ import { parseCommand } from "./command-parser.service";
 import { createCommandServer } from "./tool.service";
 import { Permission } from "@/mcp/types";
 import { resolveProductReference } from "./product-resolver.service";
+import { getConnectedClientToolNames, validateConnectedClientSelection } from "./mcp-connector.service";
 
 interface ChatRequest {
   conversationId: string;
@@ -11,6 +12,7 @@ interface ChatRequest {
   userId: string;
   companyId: string;
   mfaChallengeToken?: string;
+  connectedClientId?: string | null;
 }
 
 function toPermission(role: UserRole | string): Permission | string {
@@ -105,7 +107,20 @@ export async function processChat(data: ChatRequest) {
     throw new Error("User not found.");
   }
 
-  const server = createCommandServer(userId, companyId, toPermission(user.role), mfaChallengeToken);
+  const requestedConnectedClientId = data.connectedClientId;
+  const selectedConnectedClientId = requestedConnectedClientId !== undefined
+    ? await validateConnectedClientSelection(requestedConnectedClientId, companyId, prisma)
+    : await validateConnectedClientSelection(conversation.connectedClientId, companyId, prisma);
+
+  if (requestedConnectedClientId !== undefined && selectedConnectedClientId !== (conversation.connectedClientId ?? undefined)) {
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { connectedClientId: selectedConnectedClientId ?? null },
+    });
+  }
+
+  const enabledToolNames = await getConnectedClientToolNames(selectedConnectedClientId, companyId, prisma);
+  const server = createCommandServer(userId, companyId, toPermission(user.role), mfaChallengeToken, selectedConnectedClientId, enabledToolNames);
   const parsedCommand = await parseCommand(message, server);
 
   const startedAt = Date.now();
@@ -120,11 +135,11 @@ export async function processChat(data: ChatRequest) {
     let executionResult;
 
     try {
-      const resolvedArguments = await resolveProductReference(
-        parsedCommand.tool,
-        parsedCommand.arguments ?? {},
-        message
-      );
+      const resolvedArguments = await server.withConnectedClient(() => resolveProductReference(
+          parsedCommand.tool!,
+          parsedCommand.arguments ?? {},
+          message
+        ));
       executionResult = await server.executeTool(parsedCommand.tool, resolvedArguments);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Command could not be completed.";
@@ -153,6 +168,7 @@ export async function processChat(data: ChatRequest) {
   return {
     success: true,
     conversationId,
+    connectedClientId: selectedConnectedClientId ?? null,
     response: JSON.stringify(responsePayload),
   };
 }

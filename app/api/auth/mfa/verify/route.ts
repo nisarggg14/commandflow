@@ -2,13 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticate } from "@/lib/auth";
 import { UnauthorizedError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
-import { verifyTotpCode, createChallengeToken, decryptSecret } from "@/lib/mfa";
+import { verifyTotpCode, createChallengeToken, decryptSecret, GENERIC_STEP_UP_MFA_PURPOSE } from "@/lib/mfa";
 
 // Security: purpose and riskLevel are server-assigned and must NOT be accepted from the
 // client. The client supplies only the TOTP code. Accepting a client-supplied purpose
 // would allow a client to forge a challenge for any arbitrary security context (e.g.,
 // mimicking an approval-specific purpose like "approval:<id>:approve").
-const SERVER_MFA_PURPOSE = "step-up-mfa";
 const SERVER_MFA_RISK_LEVEL = "HIGH";
 
 export async function POST(req: NextRequest) {
@@ -46,7 +45,7 @@ export async function POST(req: NextRequest) {
       data: {
         userId: authUser.id,
         // Server-assigned: purpose and risk level cannot be overridden by the client.
-        purpose: SERVER_MFA_PURPOSE,
+        purpose: GENERIC_STEP_UP_MFA_PURPOSE,
         riskLevel: SERVER_MFA_RISK_LEVEL,
         challengeToken: finalChallengeToken,
         expiresAt: new Date(Date.now() + 5 * 60 * 1000),

@@ -1,13 +1,15 @@
 import { createMcpContext } from "@/mcp/context";
 import { CommandFlowMCPServer } from "@/mcp/server";
-import { createDefaultTools } from "@/mcp/tools";
+import { createToolsForClient } from "@/mcp/tools";
 import { Permission } from "@/mcp/types";
 
 export function createCommandServer(
   userId: string,
   companyId: string,
   role: Permission | string,
-  mfaChallengeToken?: string
+  mfaChallengeToken?: string,
+  connectedClientId?: string,
+  enabledToolNames?: string[]
 ) {
   const context = createMcpContext({
     userId,
@@ -15,10 +17,14 @@ export function createCommandServer(
     role,
     logger: () => undefined,
     mfaChallengeToken,
+    connectedClientId,
   });
 
   const server = new CommandFlowMCPServer(context);
-  server.registerTools(createDefaultTools());
+  // A selected client must have an explicit server-resolved tool policy. If a
+  // caller constructs a client-bound server without one, expose nothing.
+  const tools = connectedClientId ? createToolsForClient(enabledToolNames ?? []) : createToolsForClient(enabledToolNames);
+  server.registerTools(tools);
 
   return server;
 }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { processChat } from "@/services/chat.service";
 import { authenticate } from "@/lib/auth";
 import { GeminiQuotaError } from "@/services/llm.service";
+import { NotFoundError } from "@/lib/errors";
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,16 +15,18 @@ export async function POST(req: NextRequest) {
       userId: authUser.id,
       companyId: authUser.companyId,
       mfaChallengeToken: typeof body.mfaChallengeToken === "string" ? body.mfaChallengeToken : undefined,
+      connectedClientId: body.connectedClientId === null
+        ? null
+        : typeof body.connectedClientId === "string"
+          ? body.connectedClientId
+          : undefined,
     });
 
     return NextResponse.json(result);
   } catch (error) {
     console.error("Chat API Error:", error);
 
-    if (
-      error instanceof Error &&
-      error.message === "Conversation not found."
-    ) {
+    if (error instanceof Error && error.message === "Conversation not found.") {
       return NextResponse.json(
         {
           success: false,
@@ -31,6 +34,10 @@ export async function POST(req: NextRequest) {
         },
         { status: 404 }
       );
+    }
+
+    if (error instanceof NotFoundError) {
+      return NextResponse.json({ success: false, message: error.message }, { status: 404 });
     }
 
     if (error instanceof GeminiQuotaError) {

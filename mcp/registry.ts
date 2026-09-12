@@ -1,10 +1,15 @@
 import type { MCPContext, MCPTool, ToolExecutionResult, ToolRegistry } from "./types";
-import { ExecutionError, ToolNotFoundError } from "./types";
+import { ExecutionError, RiskLevel, ToolNotFoundError } from "./types";
 
 export class InMemoryToolRegistry implements ToolRegistry {
   private readonly tools = new Map<string, MCPTool>();
 
   register(tool: MCPTool): void {
+    if (!tool.name || !Array.isArray(tool.permissions) || tool.permissions.length === 0) {
+      throw new ExecutionError("Every MCP tool must declare a name and permissions.");
+    }
+    if (!tool.riskLevel) tool = { ...tool, riskLevel: RiskLevel.LOW };
+
     if (this.tools.has(tool.name)) {
       throw new ExecutionError(`Tool ${tool.name} is already registered.`);
     }
