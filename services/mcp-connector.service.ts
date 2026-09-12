@@ -3,6 +3,7 @@ import { decryptSecret } from "@/lib/mfa";
 import { NotFoundError } from "@/lib/errors";
 import { CLIENT_TOOL_NAMES, normalizeEnabledToolNames } from "@/mcp/client-tool-policy";
 import { runWithInventoryApiConnection, type InventoryApiConnection } from "@/services/inventory-api.service";
+import { runWithOrderApiConnection } from "@/services/order-api.service";
 import type { MCPContext } from "@/mcp/types";
 
 const CONNECTOR_TIMEOUT_MS = 10_000;
@@ -123,5 +124,5 @@ export async function withAuthenticatedConnectedClient<T>(
   if (!client) throw new NotFoundError("Selected connected client is unavailable.");
 
   const connection = buildConnection(client);
-  return runWithInventoryApiConnection(connection, operation);
+  return runWithInventoryApiConnection(connection, () => runWithOrderApiConnection(connection, operation));
 }

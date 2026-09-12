@@ -1,18 +1,19 @@
 import { z } from "zod";
 import { Permission, ToolCategory, type MCPTool } from "../../types";
+import { updateOrderStatus } from "@/services/order-api.service";
 
 export function createUpdateOrderStatusTool(): MCPTool {
   return {
     name: "orders.updateOrderStatus",
-    description: "Unsupported: the Inventory Backend has no order API.",
+    description: "Update an order status through the selected Order Management client.",
     category: ToolCategory.ORDERS,
     permissions: [Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       orderId: z.string().min(1),
       status: z.enum(["PENDING", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]),
     }),
-    async execute() {
-      throw new Error("Order operations are unsupported because the Inventory Backend does not provide an order API.");
+    async execute(input) {
+      return updateOrderStatus(input as { orderId: string; status: "PENDING" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED" });
     },
   };
 }

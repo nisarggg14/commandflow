@@ -59,6 +59,7 @@ model Company {
   conversations    Conversation[]
   activityLogs     ActivityLog[]
   approvals        Approval[]
+  automations      Automation[]
 }
 
 model User {
@@ -67,6 +68,7 @@ model User {
   email    String   @unique
   password String
   role     UserRole
+  active   Boolean @default(true)
 
   mfaEnabled Boolean @default(false)
   mfaSecret  String?
@@ -80,6 +82,7 @@ model User {
   mfaChallenges MfaChallenge[]
   approvalsRequested Approval[] @relation("ApprovalRequester")
   approvalsReviewed  Approval[] @relation("ApprovalApprover")
+  automationsOwned Automation[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -132,6 +135,30 @@ model Message {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
+
+}
+
+model Automation {
+  id                String   @id @default(cuid())
+  name              String
+  toolName          String
+  argumentsJson     String   @db.Text
+  schedule          String
+  enabled           Boolean  @default(true)
+  lastExecutionKey  String?
+  lastRunAt         DateTime?
+  companyId         String
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ownerId           String
+  owner             User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  connectedClientId String
+  connectedClient   ConnectedClient @relation(fields: [connectedClientId], references: [id], onDelete: Cascade)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([companyId, name])
+  @@index([companyId, enabled])
+  @@index([connectedClientId])
 }
 
 model ConnectedClient {
@@ -150,6 +177,8 @@ model ConnectedClient {
   company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   conversations Conversation[]
+  activityLogs ActivityLog[]
+  automations Automation[]
 
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
@@ -191,7 +220,13 @@ model ActivityLog {
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
+  connectedClientId String?
+  connectedClient   ConnectedClient? @relation(fields: [connectedClientId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([connectedClientId])
 }
 
 model MfaChallenge {

@@ -1,121 +1,12 @@
-import React from "react";
+import { Check, CircleAlert, Clock3, Database, Loader2, MessageSquare, Network, UserRound, Wrench } from 'lucide-react'
 
-export interface CommandExecutionPayload {
-  type: "execution";
-  status: "SUCCESS" | "FAILED" | "UNKNOWN";
-  toolName?: string | null;
-  rowsAffected?: number;
-  executionTimeMs?: number;
-  errors?: string[];
-  data?: unknown;
-  message?: string;
-  metrics?: {
-    totalExecutions: number;
-    successfulExecutions: number;
-    failedExecutions: number;
-    averageExecutionTime: number;
-  };
-}
+export interface CommandExecutionPayload { type: 'execution'; status: 'SUCCESS' | 'FAILED' | 'UNKNOWN'; toolName?: string | null; rowsAffected?: number; executionTimeMs?: number; errors?: string[]; data?: unknown; message?: string; metrics?: { totalExecutions: number; successfulExecutions: number; failedExecutions: number; averageExecutionTime: number } }
+interface CommandExecutionCardProps { payload: CommandExecutionPayload }
 
-interface CommandExecutionCardProps {
-  payload: CommandExecutionPayload;
-}
-
-function getBadgeStyles(status: CommandExecutionPayload["status"]) {
-  switch (status) {
-    case "SUCCESS":
-      return "bg-emerald-500/15 text-emerald-600 border-emerald-500/30";
-    case "FAILED":
-      return "bg-red-500/15 text-red-600 border-red-500/30";
-    default:
-      return "bg-amber-500/15 text-amber-600 border-amber-500/30";
-  }
-}
+const stages = [{ label: 'User', icon: UserRound }, { label: 'Gemini', icon: MessageSquare }, { label: 'MCP', icon: Network }, { label: 'Tool', icon: Wrench }, { label: 'Client', icon: Database }, { label: 'Result', icon: Check }]
+function badge(status: CommandExecutionPayload['status']) { return status === 'SUCCESS' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : status === 'FAILED' ? 'border-destructive/30 bg-destructive/10 text-destructive' : 'border-border bg-muted text-muted-foreground' }
 
 export function CommandExecutionCard({ payload }: CommandExecutionCardProps) {
-  const { status, toolName, rowsAffected, executionTimeMs, errors, data, message, metrics } = payload;
-
-  return (
-    <div className="w-full rounded-xl border border-border bg-card p-4 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-foreground">Execution Result</p>
-          <p className="text-xs text-muted-foreground">{toolName ?? "No tool selected"}</p>
-        </div>
-        <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${getBadgeStyles(status)}`}>
-          {status}
-        </span>
-      </div>
-
-      <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
-        <div className="rounded-lg bg-muted/60 p-3">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Tool Name</p>
-          <p className="mt-1 font-medium text-foreground">{toolName ?? "Unknown"}</p>
-        </div>
-        <div className="rounded-lg bg-muted/60 p-3">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Execution Status</p>
-          <p className="mt-1 font-medium text-foreground">{status}</p>
-        </div>
-        <div className="rounded-lg bg-muted/60 p-3">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Rows Affected</p>
-          <p className="mt-1 font-medium text-foreground">{rowsAffected ?? 0}</p>
-        </div>
-        <div className="rounded-lg bg-muted/60 p-3">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Execution Time</p>
-          <p className="mt-1 font-medium text-foreground">{executionTimeMs ?? 0} ms</p>
-        </div>
-      </div>
-
-      {errors && errors.length > 0 ? (
-        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          <p className="font-medium">Errors</p>
-          <ul className="mt-2 list-disc space-y-1 pl-5">
-            {errors.map((error) => (
-              <li key={error}>{error}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {message ? (
-        <div className="mt-4 rounded-lg bg-background p-3 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">Message</p>
-          <p className="mt-1">{message}</p>
-        </div>
-      ) : null}
-
-      {metrics ? (
-        <div className="mt-4 rounded-lg bg-background p-3 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">Metrics</p>
-          <div className="mt-2 grid gap-2 md:grid-cols-4">
-            <div className="rounded border border-border p-2">
-              <p className="text-xs uppercase">Total Executions</p>
-              <p className="mt-1 font-semibold text-foreground">{metrics.totalExecutions}</p>
-            </div>
-            <div className="rounded border border-border p-2">
-              <p className="text-xs uppercase">Successful</p>
-              <p className="mt-1 font-semibold text-foreground">{metrics.successfulExecutions}</p>
-            </div>
-            <div className="rounded border border-border p-2">
-              <p className="text-xs uppercase">Failed</p>
-              <p className="mt-1 font-semibold text-foreground">{metrics.failedExecutions}</p>
-            </div>
-            <div className="rounded border border-border p-2">
-              <p className="text-xs uppercase">Avg Execution Time</p>
-              <p className="mt-1 font-semibold text-foreground">{metrics.averageExecutionTime} ms</p>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {data !== undefined ? (
-        <div className="mt-4 rounded-lg bg-background p-3 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">Returned Data</p>
-          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-foreground">
-            {JSON.stringify(data, null, 2)}
-          </pre>
-        </div>
-      ) : null}
-    </div>
-  );
+  const isFailed = payload.status === 'FAILED'
+  return <article className="cf-card overflow-hidden"><div className="flex flex-wrap items-start justify-between gap-4 border-b border-border p-5"><div><div className="flex items-center gap-2"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-secondary"><Wrench className="h-3.5 w-3.5" /></span><div><p className="text-sm font-semibold">Command execution</p><p className="text-xs text-muted-foreground">{payload.toolName || 'No tool selected'}</p></div></div></div><span className={`cf-badge ${badge(payload.status)}`}>{isFailed ? <CircleAlert className="h-3 w-3" /> : <Check className="h-3 w-3" />}{payload.status}</span></div><div className="border-b border-border bg-muted/20 px-5 py-5"><p className="cf-label mb-4">Execution path</p><div className="flex items-start justify-between gap-1 overflow-x-auto pb-1">{stages.map((stage, index) => { const Icon = stage.icon; return <div key={stage.label} className="flex min-w-[3.4rem] flex-1 items-center"><div className="flex flex-col items-center gap-2"><span className={`flex h-8 w-8 items-center justify-center rounded-full border ${isFailed && index >= 4 ? 'border-border bg-background text-muted-foreground' : 'border-foreground bg-foreground text-background'}`}><Icon className="h-3.5 w-3.5" /></span><span className="text-[10px] font-medium text-muted-foreground">{stage.label}</span></div>{index < stages.length - 1 && <span className={`mx-1 mt-4 h-px flex-1 ${isFailed && index >= 3 ? 'bg-border' : 'bg-foreground/40'}`} />}</div>})}</div></div><div className="grid gap-3 p-5 sm:grid-cols-3"><div className="rounded-xl border border-border bg-background p-3"><p className="cf-label">Status</p><p className="mt-2 text-sm font-semibold">{payload.status}</p></div><div className="rounded-xl border border-border bg-background p-3"><p className="cf-label">Rows affected</p><p className="mt-2 text-sm font-semibold">{payload.rowsAffected ?? 0}</p></div><div className="rounded-xl border border-border bg-background p-3"><p className="cf-label">Duration</p><p className="mt-2 flex items-center gap-1 text-sm font-semibold"><Clock3 className="h-3.5 w-3.5 text-muted-foreground" />{payload.executionTimeMs ?? 0} ms</p></div></div>{payload.errors?.length ? <div className="mx-5 mb-5 rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive"><p className="font-semibold">Execution failed</p><ul className="mt-2 list-disc space-y-1 pl-5">{payload.errors.map((error) => <li key={error}>{error}</li>)}</ul></div> : null}{payload.message ? <div className="mx-5 mb-5 rounded-xl border border-border bg-background p-4 text-sm text-muted-foreground"><p className="font-medium text-foreground">Message</p><p className="mt-1">{payload.message}</p></div> : null}{payload.metrics ? <div className="mx-5 mb-5 grid grid-cols-2 gap-2 rounded-xl border border-border bg-background p-4 text-sm sm:grid-cols-4">{[['Total', payload.metrics.totalExecutions], ['Successful', payload.metrics.successfulExecutions], ['Failed', payload.metrics.failedExecutions], ['Average', `${payload.metrics.averageExecutionTime} ms`]].map(([label, value]) => <div key={String(label)}><p className="cf-label">{label}</p><p className="mt-1 font-semibold">{value}</p></div>)}</div> : null}{payload.data !== undefined && <details className="border-t border-border p-5"><summary className="cursor-pointer text-sm font-medium">View returned data</summary><pre className="mt-3 max-h-64 overflow-auto rounded-xl bg-background p-4 text-xs leading-5 text-muted-foreground">{JSON.stringify(payload.data, null, 2)}</pre></details>}</article>
 }

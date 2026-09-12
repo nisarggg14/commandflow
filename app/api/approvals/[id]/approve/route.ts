@@ -7,7 +7,7 @@ import { verifyTotpCode, decryptSecret, createChallengeToken } from "@/lib/mfa";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
     const { id } = await params;
     const body = await req.json().catch(() => ({}));
     const code = typeof body?.code === "string" ? body.code : undefined;

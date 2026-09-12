@@ -6,7 +6,7 @@ import { createTotpSetupResult, encryptSecret } from "@/lib/mfa";
 
 export async function POST(req: NextRequest) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
       select: { email: true, mfaEnabled: true },

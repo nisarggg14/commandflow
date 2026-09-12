@@ -34,15 +34,28 @@ function sanitizeValue(value: unknown): unknown {
 
 export async function GET(req: NextRequest) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
 
     if (authUser.role === "VIEWER") {
       throw new ForbiddenError("Only ADMIN and MANAGER users can view audit logs.");
     }
 
+    const params = req.nextUrl.searchParams;
+    const userId = params.get("userId") || undefined;
+    const connectedClientId = params.get("connectedClientId") || undefined;
+    const status = params.get("status");
+    const risk = params.get("risk")?.toUpperCase();
+    const search = params.get("search")?.trim();
+    const from = params.get("from"); const to = params.get("to");
     const logs = await prisma.activityLog.findMany({
       where: {
         companyId: authUser.companyId,
+        ...(userId ? { userId } : {}),
+        ...(connectedClientId ? { connectedClientId } : {}),
+        ...(status && ["SUCCESS", "FAILED", "PENDING"].includes(status) ? { status: status as "SUCCESS" | "FAILED" | "PENDING" } : {}),
+        ...(risk ? { details: { contains: `"riskLevel":"${risk}"` } } : {}),
+        ...(search ? { OR: [{ action: { contains: search, mode: "insensitive" } }, { details: { contains: search, mode: "insensitive" } }] } : {}),
+        ...((from || to) ? { createdAt: { ...(from ? { gte: new Date(`${from}T00:00:00.000Z`) } : {}), ...(to ? { lte: new Date(`${to}T23:59:59.999Z`) } : {}) } } : {}),
       },
       orderBy: {
         createdAt: "desc",
@@ -56,6 +69,7 @@ export async function GET(req: NextRequest) {
             email: true,
           },
         },
+        connectedClient: { select: { id: true, name: true, slug: true } },
       },
     });
 
@@ -98,7 +112,8 @@ export async function GET(req: NextRequest) {
               ? safeDetails.operation
               : typeof safeDetails.summary === "string"
                 ? safeDetails.summary
-                : null,
+              : null,
+        connectedClient: log.connectedClient,
       };
     });
 

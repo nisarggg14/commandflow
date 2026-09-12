@@ -1,17 +1,18 @@
 import { z } from "zod";
 import { Permission, ToolCategory, type MCPTool } from "../../types";
+import { cancelOrder } from "@/services/order-api.service";
 
 export function createCancelOrderTool(): MCPTool {
   return {
     name: "orders.cancelOrder",
-    description: "Unsupported: the Inventory Backend has no order API.",
+    description: "Cancel an order through the selected Order Management client.",
     category: ToolCategory.ORDERS,
     permissions: [Permission.MANAGER, Permission.ADMIN],
     inputSchema: z.object({
       orderId: z.string().min(1),
     }),
-    async execute() {
-      throw new Error("Order operations are unsupported because the Inventory Backend does not provide an order API.");
+    async execute(input) {
+      return cancelOrder((input as { orderId: string }).orderId);
     },
   };
 }

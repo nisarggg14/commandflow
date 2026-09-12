@@ -12,7 +12,7 @@ const SERVER_MFA_RISK_LEVEL = "HIGH";
 
 export async function POST(req: NextRequest) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
 
     // Only accept `code` and `challengeToken` from the client.
     // `purpose` and `riskLevel` are intentionally ignored — they are server-controlled.

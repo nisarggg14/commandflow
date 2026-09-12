@@ -131,6 +131,7 @@ export default function Page() {
   const [activeConnectedClientId, setActiveConnectedClientId] = useState<string | undefined>()
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const bootstrapStartedRef = useRef(false)
 
   const activeConversation =
     conversations.find((c) => c.id === activeConversationId) ||
@@ -146,6 +147,8 @@ export default function Page() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return
+    if (bootstrapStartedRef.current) return
+    bootstrapStartedRef.current = true
 
     const loadUser = async () => {
       const res = await fetch('/api/auth/me', {
@@ -160,9 +163,10 @@ export default function Page() {
       const data = await res.json()
       setAuthUser(data.user)
 
-      const clientsRes = await fetch('/api/connected-clients?status=ACTIVE', {
-        credentials: 'include',
-      })
+      const [clientsRes] = await Promise.all([
+        fetch('/api/connected-clients?status=ACTIVE', { credentials: 'include' }),
+        handleNewChat(),
+      ])
       if (clientsRes.ok) {
         const clientsData = await clientsRes.json()
         const clients = Array.isArray(clientsData.connectedClients)
@@ -173,7 +177,6 @@ export default function Page() {
     }
 
     void loadUser()
-    void handleNewChat()
   }, [router])
 
   const handleNewChat = async () => {
@@ -393,12 +396,16 @@ export default function Page() {
         activeConversationId={activeConversationId}
         onSelectConversation={handleSelectConversation}
         onNewChat={handleNewChat}
+        clients={connectedClients}
+        selectedClientId={activeConnectedClientId}
+        onClientChange={handleConnectedClientChange}
       />
 
       <div className="flex flex-col flex-1 w-full md:w-0">
         <TopBar title={activeConversation?.title || 'CommandFlow'} user={authUser} />
 
-        <div className="flex items-center justify-end border-b border-border bg-background px-4 py-2 md:px-6">
+        <div className="flex items-center justify-between border-b border-border bg-background px-4 py-2.5 md:px-7">
+          <div className="hidden items-center gap-2 text-[11px] text-muted-foreground sm:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Secure command channel</div>
           <ConnectedClientSwitcher
             clients={connectedClients}
             selectedClientId={activeConnectedClientId}
@@ -457,7 +464,7 @@ export default function Page() {
         )}
 
         <div className="flex-1 overflow-y-auto">
-          <div className="max-w-4xl mx-auto px-4 md:px-6 py-8">
+          <div className="mx-auto max-w-5xl px-4 py-8 md:px-8 md:py-10">
             {!activeConversation ||
             activeConversation.messages.length === 0 ? (
               <EmptyState onSuggestionClick={handleSuggestionClick} role={authUser?.role} />

@@ -6,7 +6,7 @@ import { decryptSecret, verifyTotpCode } from "@/lib/mfa";
 
 export async function POST(req: NextRequest) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
     const { code } = await req.json();
 
     if (!code || typeof code !== "string") {

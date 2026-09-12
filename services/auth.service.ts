@@ -3,9 +3,10 @@ import { hashPassword, comparePassword } from "@/lib/bcrypt";
 import { generateToken } from "@/lib/jwt";
 import { registerSchema, loginSchema } from "@/validators/auth.validator";
 import { UserRole } from "@prisma/client";
+import { UnauthorizedError } from "@/lib/errors";
 
 export function resolvePublicRegistrationRole(): UserRole {
-  return UserRole.VIEWER;
+  return UserRole.ADMIN;
 }
 
 function sanitizeUser(user: { [key: string]: unknown }) {
@@ -77,11 +78,15 @@ export async function loginUser(data: unknown) {
     where: {
       email: validatedData.email,
     },
+    include: { company: { select: { id: true, name: true, slug: true } } },
   });
 
   if (!user) {
     throw new Error("Invalid email or password");
   }
+
+  if (!user.active) throw new UnauthorizedError("This account is disabled.");
+  if (!user.company || user.company.id !== user.companyId) throw new UnauthorizedError("This account has no valid company association.");
 
   const isPasswordValid = await comparePassword(validatedData.password, user.password);
 
@@ -93,7 +98,7 @@ export async function loginUser(data: unknown) {
     id: user.id,
     email: user.email,
     role: user.role,
-    companyId: user.companyId,
+    companyId: user.company.id,
   });
 
   return {
@@ -109,15 +114,10 @@ export async function getCurrentUser(userId: string) {
     where: {
       id: userId,
     },
-    include: {
-      company: true,
-    },
+    select: { id: true, name: true, email: true, role: true, active: true, mfaEnabled: true, companyId: true, company: { select: { id: true, name: true, slug: true } } },
   });
 
-  if (!user) {
-    throw new Error("User not found");
-  }
+  if (!user || !user.active || !user.company || user.company.id !== user.companyId) throw new UnauthorizedError("User account or company association is unavailable.");
 
-  const { password, ...sanitizedUser } = user;
-  return sanitizedUser;
+  return user;
 }

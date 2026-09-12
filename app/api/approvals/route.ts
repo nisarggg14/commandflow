@@ -6,7 +6,7 @@ import { listPendingApprovals } from "@/services/approval.service";
 
 export async function GET(req: NextRequest) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
 
     if (authUser.role !== "ADMIN") {
       throw new ForbiddenError("Only ADMIN users can view pending approvals.");

@@ -15,6 +15,7 @@ interface LogEntry {
     name: string
     email: string
   }
+  connectedClient?: { id: string; name: string; slug: string } | null
   approvalId?: string | null
   requestId?: string | null
   riskLevel?: string | null
@@ -31,12 +32,17 @@ export default function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [filters, setFilters] = useState({ search: '', status: '', risk: '', from: '', to: '' })
 
   useEffect(() => {
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
     const fetchLogs = async () => {
       try {
-        const response = await fetch('/api/logs', {
+        const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value))
+        const response = await fetch(`/api/logs?${query}`, {
           credentials: 'include',
+          signal: controller.signal,
         })
 
         const data = await response.json()
@@ -59,7 +65,13 @@ export default function LogsPage() {
     }
 
     void fetchLogs()
-  }, [router])
+    }, 250)
+
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [router, filters])
 
   return (
     <div className="min-h-screen bg-background px-4 py-8 md:px-8">
@@ -72,10 +84,18 @@ export default function LogsPage() {
           <button
             type="button"
             onClick={() => router.push('/')}
-            className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-secondary transition-colors"
+            className="cf-button"
           >
             Back to chat
           </button>
+        </div>
+
+        <div className="cf-card grid gap-3 p-4 md:grid-cols-5">
+          <input aria-label="Search logs" placeholder="Search" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} className="cf-input" />
+          <select aria-label="Status filter" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })} className="cf-input"><option value="">All statuses</option><option>SUCCESS</option><option>FAILED</option><option>PENDING</option></select>
+          <select aria-label="Risk filter" value={filters.risk} onChange={(e) => setFilters({ ...filters, risk: e.target.value })} className="cf-input"><option value="">All risk</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option></select>
+          <input aria-label="From date" type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} className="cf-input" />
+          <input aria-label="To date" type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} className="cf-input" />
         </div>
 
         {loading ? (
@@ -98,6 +118,7 @@ export default function LogsPage() {
                   <tr>
                     <th className="px-4 py-3 font-medium text-foreground">Timestamp</th>
                     <th className="px-4 py-3 font-medium text-foreground">User</th>
+                    <th className="px-4 py-3 font-medium text-foreground">Client</th>
                     <th className="px-4 py-3 font-medium text-foreground">Action</th>
                     <th className="px-4 py-3 font-medium text-foreground">Status</th>
                     <th className="px-4 py-3 font-medium text-foreground">Risk</th>
@@ -114,6 +135,7 @@ export default function LogsPage() {
                         <div className="font-medium text-foreground">{log.user.name}</div>
                         <div className="text-xs text-muted-foreground">{log.user.email}</div>
                       </td>
+                      <td className="px-4 py-3 text-muted-foreground">{log.connectedClient?.name || 'Inventory fallback'}</td>
                       <td className="px-4 py-3 font-medium text-foreground">{log.action}</td>
                       <td className="px-4 py-3">
                         <span

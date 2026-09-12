@@ -6,7 +6,7 @@ import { getApprovalById } from "@/services/approval.service";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
     const { id } = await params;
 
     const approval = await getApprovalById(prisma, id, authUser.companyId);

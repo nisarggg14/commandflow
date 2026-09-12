@@ -6,7 +6,7 @@ import { rejectApproval } from "@/services/approval.service";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
     const { id } = await params;
     const body = await req.json().catch(() => ({}));
     const reason = typeof body?.reason === "string" ? body.reason : undefined;

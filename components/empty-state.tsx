@@ -1,54 +1,10 @@
+import { ArrowUpRight, Command, ShieldCheck, Sparkles } from 'lucide-react'
 import { SuggestionChip } from './suggestion-chip'
 
-interface EmptyStateProps {
-  onSuggestionClick: (text: string) => void
-  role?: string
-}
-
-export function getSuggestionsForRole(role?: string) {
-  const readSuggestions = ['Show products', 'Show inventory summary', 'List applications', 'Switch to dark mode']
-
-  if (role === 'ADMIN') {
-    return [...readSuggestions, 'Update stock', 'Reduce prices', 'Disable employee']
-  }
-
-  if (role === 'MANAGER') {
-    return [...readSuggestions, 'Update stock', 'Reduce prices']
-  }
-
-  return readSuggestions
-}
+interface EmptyStateProps { onSuggestionClick: (text: string) => void; role?: string }
+export function getSuggestionsForRole(role?: string) { const read = ['Show products', 'Show inventory summary', 'List applications', 'Switch to dark mode']; if (role === 'ADMIN') return [...read, 'Update stock', 'Reduce prices', 'Disable employee']; if (role === 'MANAGER') return [...read, 'Update stock', 'Reduce prices']; return read }
 
 export function EmptyState({ onSuggestionClick, role }: EmptyStateProps) {
   const suggestions = getSuggestionsForRole(role)
-
-  return (
-    <div className="flex flex-col items-center justify-center min-h-full gap-8 px-4 py-16">
-      {/* Header */}
-      <div className="text-center space-y-3 max-w-2xl">
-        <h1 className="text-4xl md:text-5xl font-bold text-foreground">
-          CommandFlow
-        </h1>
-        <p className="text-xl md:text-2xl text-muted-foreground font-light">
-          Enterprise AI Operating System
-        </p>
-        <p className="text-muted-foreground">
-          Control your business using natural language.
-        </p>
-      </div>
-
-      {/* Suggestions */}
-      <div className="w-full max-w-2xl">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {suggestions.map((suggestion, index) => (
-            <SuggestionChip
-              key={index}
-              text={suggestion}
-              onClick={() => onSuggestionClick(suggestion)}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  )
+  return <div className="flex min-h-full flex-col justify-center px-2 py-12 md:px-8 md:py-20"><div className="mx-auto w-full max-w-4xl"><div className="mb-10 flex items-center gap-2 text-xs text-muted-foreground"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-foreground text-background"><Command className="h-4 w-4" /></span><span>CommandFlow is ready</span><span className="h-1 w-1 rounded-full bg-emerald-500" /></div><div className="max-w-2xl"><p className="cf-kicker mb-4">Your business, in motion</p><h2 className="text-4xl font-semibold tracking-[-0.05em] text-foreground md:text-6xl">What should we <span className="text-muted-foreground">command</span> today?</h2><p className="mt-5 max-w-xl text-base leading-7 text-muted-foreground">Use natural language to inspect your connected systems, make approved changes, and keep every operation accountable.</p></div><div className="mt-10 grid gap-3 sm:grid-cols-3"><div className="cf-card p-4"><Sparkles className="h-4 w-4" /><p className="mt-6 text-sm font-semibold">Ask naturally</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Describe the outcome you need.</p></div><div className="cf-card p-4"><ShieldCheck className="h-4 w-4" /><p className="mt-6 text-sm font-semibold">Stay in control</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Approvals protect risky actions.</p></div><div className="cf-card p-4"><ArrowUpRight className="h-4 w-4" /><p className="mt-6 text-sm font-semibold">See the flow</p><p className="mt-1 text-xs leading-5 text-muted-foreground">Trace each tool to its client.</p></div></div><div className="mt-10"><div className="mb-3 flex items-center justify-between"><p className="cf-label">Suggested commands</p><p className="hidden text-xs text-muted-foreground sm:block">Choose a starting point</p></div><div className="grid gap-2 sm:grid-cols-2">{suggestions.map((suggestion) => <SuggestionChip key={suggestion} text={suggestion} onClick={() => onSuggestionClick(suggestion)} />)}</div></div></div></div>
 }

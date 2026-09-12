@@ -28,11 +28,19 @@ import { createUpdateBackgroundTool } from "./frontend/updateBackground";
 import { createUpdateThemeTool } from "./frontend/updateTheme";
 import { createUpdateNavbarTool } from "./frontend/updateNavbar";
 import { createUpdateBrandingTool } from "./frontend/updateBranding";
+import { createGetOrdersTool } from "./orders/getOrders";
+import { createUpdateOrderStatusTool } from "./orders/updateOrderStatus";
+import { createCancelOrderTool } from "./orders/cancelOrder";
 import { RiskLevel, type MCPTool } from "../types";
 import { CLIENT_TOOL_NAMES } from "../client-tool-policy";
 
 export function createDefaultTools(): MCPTool[] {
-  return [
+  return DEFAULT_TOOLS;
+}
+
+// Tool definitions are stateless. Build them once per server process instead
+// of reconstructing every schema and closure for every chat request.
+const DEFAULT_TOOLS: MCPTool[] = [
     createGetProductsTool(),
     createGetProductTool(),
     createCreateProductTool(),
@@ -63,8 +71,10 @@ export function createDefaultTools(): MCPTool[] {
     createUpdateThemeTool(),
     createUpdateNavbarTool(),
     createUpdateBrandingTool(),
-  ];
-}
+    createGetOrdersTool(),
+    createUpdateOrderStatusTool(),
+    createCancelOrderTool(),
+];
 
 export function createToolsForClient(enabledToolNames?: readonly string[]): MCPTool[] {
   const enabled = new Set(enabledToolNames ?? CLIENT_TOOL_NAMES);

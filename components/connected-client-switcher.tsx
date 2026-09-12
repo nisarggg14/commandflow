@@ -1,42 +1,11 @@
 'use client'
 
-interface ConnectedClientOption {
-  id: string
-  name: string
-  slug: string
-  status: string
-}
+import { ChevronDown, Radio } from 'lucide-react'
 
-interface ConnectedClientSwitcherProps {
-  clients: ConnectedClientOption[]
-  selectedClientId?: string
-  disabled?: boolean
-  onChange: (clientId?: string) => void
-}
+interface ConnectedClientOption { id: string; name: string; slug: string; status: string }
+interface ConnectedClientSwitcherProps { clients: ConnectedClientOption[]; selectedClientId?: string; disabled?: boolean; onChange: (clientId?: string) => void }
 
-export function ConnectedClientSwitcher({
-  clients,
-  selectedClientId,
-  disabled,
-  onChange,
-}: ConnectedClientSwitcherProps) {
-  return (
-    <label className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
-      <span className="hidden sm:inline">Client</span>
-      <select
-        aria-label="Connected client"
-        value={selectedClientId ?? ''}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value || undefined)}
-        className="max-w-[13rem] rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-foreground outline-none focus:border-ring disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        <option value="">Inventory fallback</option>
-        {clients.map((client) => (
-          <option key={client.id} value={client.id}>
-            {client.name || client.slug}
-          </option>
-        ))}
-      </select>
-    </label>
-  )
+export function ConnectedClientSwitcher({ clients, selectedClientId, disabled, onChange }: ConnectedClientSwitcherProps) {
+  const selected = clients.find((client) => client.id === selectedClientId)
+  return <div className="flex min-w-0 items-center gap-3"><div className="hidden items-center gap-2 text-muted-foreground sm:flex"><Radio className="h-3.5 w-3.5" /><span className="cf-label">Target client</span></div><div className="relative"><select aria-label="Connected client" value={selectedClientId ?? ''} disabled={disabled} onChange={(event) => onChange(event.target.value || undefined)} className="cf-input min-w-[13rem] appearance-none pr-9 text-xs font-medium disabled:cursor-not-allowed"><option value="">Inventory fallback</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.name || client.slug} · {client.status.toLowerCase()}</option>)}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" /></div>{selected && <span className="hidden text-[11px] text-muted-foreground lg:inline">Ready for commands</span>}</div>
 }

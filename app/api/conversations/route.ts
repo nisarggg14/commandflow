@@ -11,7 +11,7 @@ import {
 
 export async function POST(req: NextRequest) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
 
     const body = await req.json();
 
@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
 
     const conversations = await getConversations(
       authUser.companyId

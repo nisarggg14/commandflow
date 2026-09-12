@@ -5,7 +5,7 @@ import { UnauthorizedError, ForbiddenError } from "@/lib/errors";
 
 export async function GET(req: NextRequest) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
     const user = await getCurrentUser(authUser.id);
 
     return NextResponse.json({ success: true, user });

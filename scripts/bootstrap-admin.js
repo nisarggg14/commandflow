@@ -34,11 +34,18 @@ async function main() {
   const adminName = readEnv("COMMANDER_BOOTSTRAP_NAME", DEFAULT_ADMIN_NAME);
   const adminPassword = readEnv("COMMANDER_BOOTSTRAP_PASSWORD", "admin123");
 
-  let adminUser = await prisma.user.findUnique({
-    where: { email: adminEmail },
+  let adminUser = await prisma.user.findFirst({
+    where: { email: adminEmail, companyId: company.id },
   });
 
   if (!adminUser) {
+    const existingElsewhere = await prisma.user.findUnique({
+      where: { email: adminEmail },
+      select: { id: true, companyId: true },
+    });
+    if (existingElsewhere && existingElsewhere.companyId !== company.id) {
+      throw new Error("Bootstrap email is already assigned to another company; refusing cross-company reassignment.");
+    }
     const hashedPassword = await bcrypt.hash(adminPassword, 10);
     adminUser = await prisma.user.create({
       data: {
@@ -46,6 +53,7 @@ async function main() {
         email: adminEmail,
         password: hashedPassword,
         role: "ADMIN",
+        active: true,
         companyId: company.id,
       },
     });
@@ -55,6 +63,7 @@ async function main() {
       data: {
         name: adminName,
         role: "ADMIN",
+        active: true,
         companyId: company.id,
       },
     });

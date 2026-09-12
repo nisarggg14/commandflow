@@ -20,5 +20,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/chat", "/settings", "/logs", "/api/chat/:path*", "/api/logs/:path*", "/((?!api/auth|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/", "/chat/:path*", "/settings/:path*", "/logs/:path*", "/admin/:path*", "/api/chat/:path*", "/api/logs/:path*"],
 };

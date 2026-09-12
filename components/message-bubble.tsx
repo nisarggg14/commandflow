@@ -15,8 +15,8 @@ export function MessageBubble({ role, content, isLoading }: MessageBubbleProps) 
       <div
         className={`max-w-[80%] rounded-xl px-4 py-3 ${
           isUser
-            ? 'bg-accent text-accent-foreground'
-            : 'bg-muted-background text-foreground'
+            ? 'bg-foreground text-background'
+            : 'border border-border bg-card text-foreground shadow-sm'
         }`}
       >
         {isLoading ? (
