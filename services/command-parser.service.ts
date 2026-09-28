@@ -1,10 +1,17 @@
 import { CommandFlowMCPServer } from "@/mcp/server";
 import { generateResponse } from "./llm.service";
+import type { ExecutionStageId } from "@/types/execution-trace";
 
 export interface ParsedCommand {
   tool?: string;
   arguments?: Record<string, unknown>;
   action?: "unknown";
+}
+
+export interface CommandParseTraceHooks {
+  onStageStart?: (stage: Extract<ExecutionStageId, "intent-analysis" | "mcp-plan-preparation">) => void;
+  onStageComplete?: (stage: Extract<ExecutionStageId, "intent-analysis" | "mcp-plan-preparation">) => void;
+  onStageFailed?: (stage: Extract<ExecutionStageId, "intent-analysis" | "mcp-plan-preparation">, error: string) => void;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -81,7 +88,8 @@ function formatSchema(schema: Record<string, unknown>): string {
 
 export async function parseCommand(
   message: string,
-  server: CommandFlowMCPServer
+  server: CommandFlowMCPServer,
+  traceHooks?: CommandParseTraceHooks
 ): Promise<ParsedCommand> {
   const tools = server.listTools();
 
@@ -123,11 +131,30 @@ User request:
 ${message}
 `;
 
-  const llmResponse = await generateResponse(prompt);
+  traceHooks?.onStageStart?.("intent-analysis");
+  let llmResponse;
+  try {
+    llmResponse = await generateResponse(prompt);
+    traceHooks?.onStageComplete?.("intent-analysis");
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Intent analysis failed.";
+    traceHooks?.onStageFailed?.("intent-analysis", errorMessage);
+    throw error;
+  }
 
   if (!llmResponse.success) {
+    traceHooks?.onStageFailed?.("intent-analysis", "Intent analysis did not return a result.");
     return { action: "unknown" };
   }
 
-  return sanitizeCommand(llmResponse.text);
+  traceHooks?.onStageStart?.("mcp-plan-preparation");
+  try {
+    const parsedCommand = sanitizeCommand(llmResponse.text);
+    traceHooks?.onStageComplete?.("mcp-plan-preparation");
+    return parsedCommand;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "MCP plan generation failed.";
+    traceHooks?.onStageFailed?.("mcp-plan-preparation", errorMessage);
+    throw error;
+  }
 }

@@ -6,7 +6,7 @@ import {
   validateApprovalForExecution,
   markApprovalExecuted,
 } from "@/services/approval.service";
-import type { MCPContext, MCPTool, ToolExecutionResult, ToolRegistry, ToolMetadata } from "./types";
+import type { MCPContext, MCPTool, ToolExecutionResult, ToolRegistry, ToolMetadata, ToolExecutionTraceHooks } from "./types";
 import {
   Permission,
   PermissionDeniedError,
@@ -50,11 +50,15 @@ export class CommandFlowMCPServer {
     return tools;
   }
 
-  async executeTool(name: string, input: unknown): Promise<ToolExecutionResult> {
+  async executeTool(name: string, input: unknown, traceHooks?: ToolExecutionTraceHooks): Promise<ToolExecutionResult> {
     const startedAt = Date.now();
     let riskLevel = "LOW";
     let mfaRequired = false;
     let mfaResult: "SUCCESS" | "FAILED" | "NOT_REQUIRED" = "NOT_REQUIRED";
+    let validationCompleted = false;
+    let executionStarted = false;
+
+    traceHooks?.onStageStart?.("tool-selection-validation");
 
     try {
       const tool = this.registry.get(name);
@@ -150,7 +154,13 @@ export class CommandFlowMCPServer {
         mfaResult = "SUCCESS";
       }
 
+      validationCompleted = true;
+      traceHooks?.onStageComplete?.("tool-selection-validation");
+      executionStarted = true;
+      traceHooks?.onStageStart?.("tool-execution");
+
       const data = await this.withConnectedClient(async () => tool.execute(parsedInput, this.context));
+      traceHooks?.onStageComplete?.("tool-execution");
       const duration = Date.now() - startedAt;
 
       if (approvalId) {
@@ -181,6 +191,12 @@ export class CommandFlowMCPServer {
     } catch (error) {
       const duration = Date.now() - startedAt;
       const message = error instanceof Error ? error.message : "Unknown error";
+
+      if (executionStarted) {
+        traceHooks?.onStageFailed?.("tool-execution", message);
+      } else if (!validationCompleted) {
+        traceHooks?.onStageFailed?.("tool-selection-validation", message);
+      }
 
       if (mfaRequired) {
         mfaResult = "FAILED";

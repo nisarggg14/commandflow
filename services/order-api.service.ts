@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { getExternalRequestTrace } from "@/services/external-request-trace";
 
 export interface OrderApiConnection {
   baseUrl: string;
@@ -35,10 +36,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.body) headers.set("Content-Type", "application/json");
   auth(headers, connection);
   let response: Response;
+  const requestTrace = storage.getStore() ? getExternalRequestTrace() : undefined;
+  requestTrace?.onRequestStart();
   try { response = await fetch(url, { ...init, headers, signal: AbortSignal.timeout(connection.timeoutMs ?? 10000) }); }
-  catch { throw new Error("Order service is unavailable."); }
+  catch (error) { requestTrace?.onRequestFailed(error instanceof Error ? error.message : "Connected client request failed."); throw new Error("Order service is unavailable."); }
   const payload = response.status === 204 ? null : await response.json().catch(() => null);
-  if (!response.ok) throw new Error(response.status === 404 ? "Order endpoint or order was not found." : response.status >= 500 ? "Order service is currently unavailable." : "Order request failed.");
+  if (!response.ok) {
+    const error = new Error(response.status === 404 ? "Order endpoint or order was not found." : response.status >= 500 ? "Order service is currently unavailable." : "Order request failed.");
+    requestTrace?.onRequestFailed(error.message);
+    throw error;
+  }
+  requestTrace?.onRequestComplete();
   return payload as T;
 }
 

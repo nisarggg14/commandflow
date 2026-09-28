@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { getExternalRequestTrace } from "@/services/external-request-trace";
 
 type InventoryRole = "admin" | "manager" | "viewer";
 
@@ -222,39 +223,47 @@ async function inventoryRequest<T>(
 
     const signal = connection ? AbortSignal.timeout(connection.timeoutMs ?? 10_000) : options.signal;
     let response: Response;
+    const requestTrace = connection ? getExternalRequestTrace() : undefined;
+    requestTrace?.onRequestStart();
     try {
       response = await fetch(requestUrl.toString(), { ...options, headers, signal });
     } catch (error) {
+      requestTrace?.onRequestFailed(error instanceof Error ? error.message : "Connected client request failed.");
       if (error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")) {
         throw new Error("Connected client request timed out.");
       }
       throw new Error("Inventory service is unavailable.");
     }
 
-    const contentType = response.headers.get("content-type") ?? "";
-    let payload: unknown = null;
+    try {
+      const contentType = response.headers.get("content-type") ?? "";
+      let payload: unknown = null;
 
-    if (contentType.includes("application/json")) {
-      payload = await response.json();
-    } else if (response.status !== 204) {
-      payload = await response.text();
+      if (contentType.includes("application/json")) {
+        payload = await response.json();
+      } else if (response.status !== 204) {
+        payload = await response.text();
+      }
+
+      if (response.status === 401 && requireAuth && attempt === 0) {
+        inventoryToken = null;
+        inventoryTokenExpiresAt = 0;
+        continue;
+      }
+
+      if (!response.ok) throw normalizeInventoryError(response.status);
+
+      if (response.status === 204) {
+        requestTrace?.onRequestComplete();
+        return null as T;
+      }
+
+      requestTrace?.onRequestComplete();
+      return payload as T;
+    } catch (error) {
+      requestTrace?.onRequestFailed(error instanceof Error ? error.message : "Connected client request failed.");
+      throw error;
     }
-
-    if (response.status === 401 && requireAuth && attempt === 0) {
-      inventoryToken = null;
-      inventoryTokenExpiresAt = 0;
-      continue;
-    }
-
-    if (!response.ok) {
-      throw normalizeInventoryError(response.status);
-    }
-
-    if (response.status === 204) {
-      return null as T;
-    }
-
-    return payload as T;
   }
 
   throw new Error("Inventory request failed.");

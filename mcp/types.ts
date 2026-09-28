@@ -83,6 +83,12 @@ export interface ToolExecutionResult<T = unknown> {
   };
 }
 
+export interface ToolExecutionTraceHooks {
+  onStageStart?: (stage: "tool-selection-validation" | "tool-execution") => void;
+  onStageComplete?: (stage: "tool-selection-validation" | "tool-execution") => void;
+  onStageFailed?: (stage: "tool-selection-validation" | "tool-execution", error: string) => void;
+}
+
 export interface ToolRegistry {
   register(tool: MCPTool): void;
   unregister(name: string): void;
