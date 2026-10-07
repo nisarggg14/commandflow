@@ -1,3 +1,5 @@
+import crypto from "crypto";
+
 import jwt from "jsonwebtoken";
 import { UserRole } from "@prisma/client";
 import { UnauthorizedError } from "./errors";
@@ -17,6 +19,8 @@ export interface JwtPayload {
   email: string;
   role: UserRole;
   companyId: string;
+
+  sessionId?: string;
 }
 
 export function generateToken(payload: JwtPayload) {
@@ -34,6 +38,8 @@ export function verifyToken(token: string): JwtPayload {
       email: typeof verified.email === "string" ? verified.email : "",
       role: (verified.role as JwtPayload["role"]) ?? UserRole.VIEWER,
       companyId: typeof verified.companyId === "string" ? verified.companyId : "",
+
+      sessionId: typeof verified.sessionId === "string" ? verified.sessionId : "",
     };
   } catch (error) {
     if (error instanceof Error && error.name === "TokenExpiredError") {
@@ -43,3 +49,5 @@ export function verifyToken(token: string): JwtPayload {
     throw new UnauthorizedError("Invalid or missing authentication token.");
   }
 }
+
+export function hashSessionToken(token: string): string { return crypto.createHash("sha256").update(token).digest("hex"); }

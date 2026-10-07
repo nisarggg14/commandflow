@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+
+import { enforceRateLimit, requestAddress } from "@/lib/rate-limit";
 import { authenticate } from "@/lib/auth";
 import { UnauthorizedError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
@@ -7,6 +9,9 @@ import { decryptSecret, verifyTotpCode } from "@/lib/mfa";
 export async function POST(req: NextRequest) {
   try {
     const authUser = await authenticate(req);
+    const limit = await enforceRateLimit(`mfa-setup:${authUser.id}:${requestAddress(req)}`, 5, 5 * 60 * 1000);
+
+    if (!limit.allowed) return NextResponse.json({ success: false, message: "Too many MFA attempts." }, { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } });
     const { code } = await req.json();
 
     if (!code || typeof code !== "string") {

@@ -32,6 +32,8 @@ async function main() {
 
   const adminEmail = readEnv("COMMANDER_BOOTSTRAP_EMAIL", DEFAULT_ADMIN_EMAIL);
   const adminName = readEnv("COMMANDER_BOOTSTRAP_NAME", DEFAULT_ADMIN_NAME);
+  if (process.env.NODE_ENV === "production" && !process.env.COMMANDER_BOOTSTRAP_PASSWORD) throw new Error("COMMANDER_BOOTSTRAP_PASSWORD is required in production.");
+
   const adminPassword = readEnv("COMMANDER_BOOTSTRAP_PASSWORD", "admin123");
 
   let adminUser = await prisma.user.findFirst({

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { hashPassword, comparePassword } from "@/lib/bcrypt";
-import { generateToken } from "@/lib/jwt";
+import { generateToken, hashSessionToken, verifyToken } from "@/lib/jwt";
 import { registerSchema, loginSchema } from "@/validators/auth.validator";
 import { UserRole } from "@prisma/client";
 import { UnauthorizedError } from "@/lib/errors";
@@ -16,6 +16,10 @@ function sanitizeUser(user: { [key: string]: unknown }) {
 
 export async function registerUser(data: unknown) {
   const validatedData = registerSchema.parse(data);
+
+
+
+  if (process.env.NODE_ENV === "production" && (validatedData.password.length < 12 || ["admin123", "password", "password123", "commandflow"].includes(validatedData.password.toLowerCase()))) throw new Error("A strong production password is required.");
 
   const existingUser = await prisma.user.findUnique({
     where: {
@@ -62,6 +66,7 @@ export async function registerUser(data: unknown) {
     companyId: user.companyId,
   });
 
+  await prisma.session.create({ data: { token: hashSessionToken(token), userId: user.id, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) } });
   return {
     success: true,
     message: "Company and admin user created successfully",
@@ -101,6 +106,7 @@ export async function loginUser(data: unknown) {
     companyId: user.company.id,
   });
 
+  await prisma.session.create({ data: { token: hashSessionToken(token), userId: user.id, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) } });
   return {
     success: true,
     message: "Login successful",

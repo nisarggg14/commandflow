@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { Permission, RiskLevel, ToolCategory, type MCPTool } from "../../types";
 
 export function createDisableUserTool(): MCPTool {
@@ -24,15 +25,17 @@ export function createDisableUserTool(): MCPTool {
         throw new Error("Users cannot disable their own account.");
       }
 
-      return context.prisma.user.updateMany({
-        where: {
-          id: userId,
-          companyId: context.companyId,
-        },
-        data: {
-          role: "VIEWER" as const,
-        },
-      });
+      return context.prisma.$transaction(async (tx) => {
+        const target = await tx.user.findFirst({ where: { id: userId, companyId: context.companyId }, select: { id: true, role: true, active: true } });
+        if (!target) throw new Error("User not found.");
+        if (target.role === "ADMIN" && target.active) {
+          const admins = await tx.user.count({ where: { companyId: context.companyId, role: "ADMIN", active: true } });
+          if (admins <= 1) throw new Error("The company must retain an active administrator.");
+        }
+        const updated = await tx.user.updateMany({ where: { id: userId, companyId: context.companyId, active: true }, data: { active: false } });
+        if (updated.count !== 1) throw new Error("User was already disabled.");
+        return updated;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     },
   };
 }

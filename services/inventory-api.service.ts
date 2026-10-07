@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getExternalRequestTrace } from "@/services/external-request-trace";
 
+import { assertSafeOutboundUrl } from "@/lib/ssrf";
+
 type InventoryRole = "admin" | "manager" | "viewer";
 
 export interface InventoryApiConnection {
@@ -200,7 +202,7 @@ async function inventoryRequest<T>(
   validateInventoryPath(path);
   const connection = inventoryConnectionStorage.getStore();
   const baseUrl = connection?.baseUrl ?? INVENTORY_BASE_URL;
-  const requestUrl = new URL(path.replace(/^\/+/, ""), `${baseUrl.replace(/\/+$/, "")}/`);
+  const requestUrl = await assertSafeOutboundUrl(new URL(path.replace(/^\/+/, ""), `${baseUrl.replace(/\/+$/, "")}/`).toString());
   if (requestUrl.protocol !== "http:" && requestUrl.protocol !== "https:") {
     throw new Error("Inventory base URL must use HTTP or HTTPS.");
   }
@@ -226,7 +228,7 @@ async function inventoryRequest<T>(
     const requestTrace = connection ? getExternalRequestTrace() : undefined;
     requestTrace?.onRequestStart();
     try {
-      response = await fetch(requestUrl.toString(), { ...options, headers, signal });
+      response = await fetch(requestUrl.toString(), { ...options, headers, signal, redirect: "manual" });
     } catch (error) {
       requestTrace?.onRequestFailed(error instanceof Error ? error.message : "Connected client request failed.");
       if (error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")) {

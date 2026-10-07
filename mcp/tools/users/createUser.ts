@@ -27,7 +27,7 @@ export function createCreateUserTool(): MCPTool {
 
       const hashedPassword = await hashPassword(password);
 
-      return context.prisma.user.create({
+      const created = await context.prisma.user.create({
         data: {
           name,
           email,
@@ -36,6 +36,7 @@ export function createCreateUserTool(): MCPTool {
           companyId: context.companyId,
         },
       });
+      return context.prisma.user.findUnique({ where: { id: created.id }, select: { id: true, name: true, email: true, role: true, active: true, mfaEnabled: true, companyId: true, createdAt: true, updatedAt: true } });
     },
   };
 }

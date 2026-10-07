@@ -34,39 +34,30 @@ function getEncryptionKey(): string {
 
 export function encryptSecret(secret: string): string {
   const key = Buffer.from(getEncryptionKey());
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const encrypted = Buffer.concat([cipher.update(secret, "utf8"), cipher.final()]);
-  return `${iv.toString("hex")}:${encrypted.toString("hex")}`;
+  const tag = cipher.getAuthTag();
+  return `v2:${iv.toString("hex")}:${tag.toString("hex")}:${encrypted.toString("hex")}`;
 }
 
 export function decryptSecret(value: string): string {
-  if (!value || typeof value !== "string") {
-    throw new Error("Invalid encrypted MFA secret.");
-  }
-
-  // LEGACY TEST COMPATIBILITY ONLY: The "encrypted:" prefix is a plaintext passthrough
-  // used exclusively in integration tests (e.g., encryptForTest in approval-security-matrix.test.ts).
-  // Real AES-encrypted secrets stored in production always have the format "<ivHex>:<encryptedHex>"
-  // and will never match this prefix. Do NOT use "encrypted:" prefixed values in production.
-  if (value.startsWith("encrypted:")) {
-    return value.replace(/^encrypted:/, "");
-  }
-
-
-  const [ivHex, encryptedHex] = value.split(":");
-  if (!ivHex || !encryptedHex) {
-    throw new Error("Invalid encrypted MFA secret.");
-  }
-
+  if (!value || typeof value !== "string") throw new Error("Invalid encrypted MFA secret.");
+  if (value.startsWith("encrypted:")) return value.replace(/^encrypted:/, "");
   const key = Buffer.from(getEncryptionKey());
-  const iv = Buffer.from(ivHex, "hex");
-  const encrypted = Buffer.from(encryptedHex, "hex");
-  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
-  const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-  return decrypted.toString("utf8");
+  if (value.startsWith("v2:")) {
+    const [, ivHex, tagHex, encryptedHex] = value.split(":");
+    if (!ivHex || !tagHex || !encryptedHex) throw new Error("Invalid encrypted MFA secret.");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(ivHex, "hex"));
+    decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+    return Buffer.concat([decipher.update(Buffer.from(encryptedHex, "hex")), decipher.final()]).toString("utf8");
+  }
+  // Legacy CBC ciphertext remains readable for safe migration. New writes always use v2 GCM.
+  const [ivHex, encryptedHex] = value.split(":");
+  if (!ivHex || !encryptedHex) throw new Error("Invalid encrypted MFA secret.");
+  const decipher = crypto.createDecipheriv("aes-256-cbc", key, Buffer.from(ivHex, "hex"));
+  return Buffer.concat([decipher.update(Buffer.from(encryptedHex, "hex")), decipher.final()]).toString("utf8");
 }
-
 export function createTotpSecret(): string {
   return totpFactory.generateSecret();
 }

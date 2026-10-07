@@ -24,13 +24,9 @@ export async function createConversation(
   });
 }
 
-export async function getConversations(
-  companyId: string
-) {
+export async function getConversations(companyId: string, userId: string) {
   return prisma.conversation.findMany({
-    where: {
-      companyId,
-    },
+    where: { companyId, userId },
     include: {
       messages: {
         orderBy: {

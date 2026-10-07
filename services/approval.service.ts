@@ -608,7 +608,7 @@ export async function markApprovalExecuted(prisma: PrismaClient, approvalId: str
       throw new Error("Approval not found.");
     }
 
-    if (approval.status !== ApprovalStatus.APPROVED) {
+    if (approval.status !== ("EXECUTING" as any)) {
       throw new Error(`Approval cannot be marked executed from status ${approval.status}.`);
     }
 
@@ -623,7 +623,7 @@ export async function markApprovalExecuted(prisma: PrismaClient, approvalId: str
     const updated = await tx.approval.updateMany({
       where: {
         id: approval.id,
-        status: ApprovalStatus.APPROVED,
+        status: "EXECUTING" as any
       },
       data: {
         status: ApprovalStatus.EXECUTED,
@@ -655,4 +655,13 @@ export async function markApprovalExecuted(prisma: PrismaClient, approvalId: str
       where: { id: approval.id },
     });
   });
+}
+
+export async function claimApprovalForExecution(prisma: PrismaClient, approvalId: string, companyId: string) {
+  const claimed = await prisma.approval.updateMany({ where: { id: approvalId, companyId, status: ApprovalStatus.APPROVED, expiresAt: { gt: new Date() } }, data: { status: "EXECUTING" as any } });
+  if (claimed.count !== 1) throw new Error("Approval was already claimed or is no longer executable.");
+}
+
+export async function markApprovalFailed(prisma: PrismaClient, approvalId: string, companyId: string) {
+  await prisma.approval.updateMany({ where: { id: approvalId, companyId, status: "EXECUTING" as any }, data: { status: "FAILED" as any } });
 }

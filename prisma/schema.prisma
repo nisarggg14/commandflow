@@ -37,6 +37,8 @@ enum ApprovalStatus {
   EXPIRED
   CANCELLED
   EXECUTED
+  EXECUTING
+  FAILED
 }
 
 enum ClientStatus {
@@ -100,6 +102,15 @@ model Session {
   createdAt DateTime @default(now())
 }
 
+model RateLimitBucket {
+  id String @id
+  key String @unique
+  count Int
+  windowStart DateTime
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+
 model Conversation {
   id String @id @default(cuid())
 
@@ -146,6 +157,8 @@ model Automation {
   schedule          String
   enabled           Boolean  @default(true)
   lastExecutionKey  String?
+
+  lastExecutionStatus String?
   lastRunAt         DateTime?
   companyId         String
   company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)

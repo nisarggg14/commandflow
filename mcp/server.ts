@@ -5,6 +5,10 @@ import {
   createApprovalRequest,
   validateApprovalForExecution,
   markApprovalExecuted,
+
+  claimApprovalForExecution,
+
+  markApprovalFailed,
 } from "@/services/approval.service";
 import type { MCPContext, MCPTool, ToolExecutionResult, ToolRegistry, ToolMetadata, ToolExecutionTraceHooks } from "./types";
 import {
@@ -58,6 +62,8 @@ export class CommandFlowMCPServer {
     let validationCompleted = false;
     let executionStarted = false;
 
+    let approvalId: string | null = null;
+
     traceHooks?.onStageStart?.("tool-selection-validation");
 
     try {
@@ -74,7 +80,7 @@ export class CommandFlowMCPServer {
       this.authorize(tool);
       this.evaluateRisk(tool);
 
-      let approvalId: string | null = null;
+
       const baseApprovalPurpose = tool.mfaPurpose ?? tool.name;
       // Bind approvals to the selected client as well as the tool and args.
       // This prevents an approval granted for client A being replayed against
@@ -152,6 +158,7 @@ export class CommandFlowMCPServer {
         });
         this.context.mfaVerified = true;
         mfaResult = "SUCCESS";
+        if (approvalId) await claimApprovalForExecution(this.context.prisma, approvalId, this.context.companyId);
       }
 
       validationCompleted = true;
@@ -191,6 +198,10 @@ export class CommandFlowMCPServer {
     } catch (error) {
       const duration = Date.now() - startedAt;
       const message = error instanceof Error ? error.message : "Unknown error";
+
+      if (approvalId && executionStarted) await markApprovalFailed(this.context.prisma, approvalId, this.context.companyId);
+
+
 
       if (executionStarted) {
         traceHooks?.onStageFailed?.("tool-execution", message);
@@ -263,6 +274,20 @@ export class CommandFlowMCPServer {
   withConnectedClient<T>(operation: () => Promise<T>): Promise<T> {
     return withAuthenticatedConnectedClient(this.context, operation);
   }
+
+  validateToolInput(name: string, input: unknown): unknown {
+
+    const tool = this.registry.get(name);
+
+    if (!tool) throw new ToolNotFoundError(`No tool registered with the name ${name}.`);
+
+    this.authorize(tool);
+
+    return this.validate(tool, input);
+
+  }
+
+
 
   validate(tool: MCPTool, input: unknown): unknown {
     const parsed = tool.inputSchema.safeParse(input);

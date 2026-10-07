@@ -70,9 +70,7 @@ export async function GET(req: NextRequest) {
   try {
     const authUser = await authenticate(req);
 
-    const conversations = await getConversations(
-      authUser.companyId
-    );
+    const conversations = await getConversations(authUser.companyId, authUser.id);
 
     return NextResponse.json({
       success: true,

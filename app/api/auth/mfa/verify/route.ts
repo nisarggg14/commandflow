@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+
+import { enforceRateLimit, requestAddress } from "@/lib/rate-limit";
 import { authenticate } from "@/lib/auth";
 import { UnauthorizedError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
@@ -13,9 +15,13 @@ const SERVER_MFA_RISK_LEVEL = "HIGH";
 export async function POST(req: NextRequest) {
   try {
     const authUser = await authenticate(req);
+    const limit = await enforceRateLimit("mfa:" + authUser.id + ":" + requestAddress(req), 5, 5 * 60 * 1000);
 
-    // Only accept `code` and `challengeToken` from the client.
-    // `purpose` and `riskLevel` are intentionally ignored — they are server-controlled.
+    if (!limit.allowed) return NextResponse.json({ success: false, message: "Too many MFA attempts." }, { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } });
+
+    // Only accept code and challengeToken from the client.
+    // purpose and
+    // purpose andriskLevel are intentionally ignored because they are server-controlled.
     const { code, challengeToken } = await req.json();
 
     if (!code || typeof code !== "string") {
@@ -71,4 +77,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: error instanceof Error ? error.message : "Verification failed." }, { status: 500 });
   }
 }
-

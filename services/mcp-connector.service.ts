@@ -6,20 +6,9 @@ import { runWithInventoryApiConnection, type InventoryApiConnection } from "@/se
 import { runWithOrderApiConnection } from "@/services/order-api.service";
 import type { MCPContext } from "@/mcp/types";
 
+import { assertSafeOutboundUrl } from "@/lib/ssrf";
+
 const CONNECTOR_TIMEOUT_MS = 10_000;
-
-function isDisallowedConnectorHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host.endsWith(".localhost") || host === "localhost.localdomain") return true;
-  if (host === "::" || host === "::1" || host === "0:0:0:0:0:0:0:1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")) return true;
-  if (host.startsWith("::ffff:")) return isDisallowedConnectorHost(host.slice("::ffff:".length));
-
-  const octets = host.split(".").map(Number);
-  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false;
-  const [first, second] = octets;
-  return first === 0 || first === 10 || first === 127 || first === 169 && second === 254 ||
-    first === 172 && second >= 16 && second <= 31 || first === 192 && second === 168;
-}
 
 export async function validateConnectedClientSelection(
   connectedClientId: string | null | undefined,
@@ -77,11 +66,11 @@ function readAuthConfig(authType: string, encryptedAuthConfig: string | null): R
   return config;
 }
 
-function buildConnection(client: {
+async function buildConnection(client: {
   baseUrl: string;
   authType: string;
   authConfig: string | null;
-}): InventoryApiConnection {
+}): Promise<InventoryApiConnection> {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(client.baseUrl);
@@ -89,7 +78,7 @@ function buildConnection(client: {
     throw new Error("Connected client base URL is invalid.");
   }
 
-  if ((parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") || parsedUrl.username || parsedUrl.password || !parsedUrl.hostname || isDisallowedConnectorHost(parsedUrl.hostname)) {
+  if ((parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") || parsedUrl.username || parsedUrl.password || !parsedUrl.hostname) {
     throw new Error("Connected client base URL is not allowed.");
   }
 
@@ -123,6 +112,6 @@ export async function withAuthenticatedConnectedClient<T>(
 
   if (!client) throw new NotFoundError("Selected connected client is unavailable.");
 
-  const connection = buildConnection(client);
+  const connection = await buildConnection(client);
   return runWithInventoryApiConnection(connection, () => runWithOrderApiConnection(connection, operation));
 }

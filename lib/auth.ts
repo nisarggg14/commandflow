@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { verifyToken } from "./jwt";
+import { verifyToken, hashSessionToken } from "./jwt";
 import { UserRole } from "@prisma/client";
 import { UnauthorizedError } from "./errors";
 import { prisma } from "./prisma";
@@ -23,6 +23,8 @@ export async function authenticate(req: NextRequest): Promise<AuthUser> {
 
   const tokenUser = verifyToken(token);
   if (!tokenUser.id) throw new UnauthorizedError("Invalid authentication token.");
+  const session = await prisma.session.findUnique({ where: { token: hashSessionToken(token) } });
+  if (!session || session.userId !== tokenUser.id || session.expiresAt <= new Date()) throw new UnauthorizedError("Session is no longer valid.");
 
   // Role and company are always read from the current database record. The
   // signed JWT identifies the session only; stale claims cannot grant access.

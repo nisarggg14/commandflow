@@ -10,7 +10,11 @@ async function main() {
     throw new Error("No company found. Create a company before running this script.");
   }
 
-  const password = await bcrypt.hash("admin123", 10);
+  const rawPassword = process.env.COMMANDER_BOOTSTRAP_PASSWORD;
+
+  if (!rawPassword || (process.env.NODE_ENV === "production" && rawPassword === "admin123")) throw new Error("A non-default COMMANDER_BOOTSTRAP_PASSWORD is required.");
+
+  const password = await bcrypt.hash(rawPassword, 10);
 
   await prisma.user.create({
     data: {
@@ -22,7 +26,7 @@ async function main() {
     },
   });
 
-  console.log("✅ Admin user created");
+  console.log("âœ… Admin user created");
 }
 
 main()

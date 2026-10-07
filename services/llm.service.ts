@@ -1,5 +1,11 @@
 import { GoogleGenAI } from "@google/genai";
 
+import { assertProductionEnvironment } from "@/lib/production-env";
+
+
+
+assertProductionEnvironment();
+
 const apiKey = process.env.GEMINI_API_KEY;
 
 if (!apiKey) {
