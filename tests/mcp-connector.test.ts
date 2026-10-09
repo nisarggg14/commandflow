@@ -1,4 +1,5 @@
-import test from "node:test";
+import test, { mock } from "node:test";
+import dns from "node:dns/promises";
 import assert from "node:assert/strict";
 import { encryptSecret } from "../lib/mfa";
 import { withAuthenticatedConnectedClient } from "../services/mcp-connector.service";
@@ -12,6 +13,9 @@ function fakeContext(db: unknown, connectedClientId = "client-1") {
 
 test("MCP connector derives base URL and Authorization from the selected client", async () => {
   const originalFetch = globalThis.fetch;
+  const dnsLookupMock = mock.method(dns, "lookup", async () => [
+    { address: "203.0.113.10", family: 4 },
+  ]);
   let requestedUrl = "";
   let requestedAuthorization = "";
   globalThis.fetch = async (input, init) => {
@@ -39,6 +43,7 @@ test("MCP connector derives base URL and Authorization from the selected client"
     assert.equal(requestedAuthorization, "Bearer connector-secret");
   } finally {
     globalThis.fetch = originalFetch;
+    dnsLookupMock.mock.restore();
   }
 });
 
