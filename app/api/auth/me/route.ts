@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        message: error instanceof Error ? error.message : "Internal Server Error",
+        message: "Unable to load the authenticated user. Please try again later.",
       },
       { status: 500 }
     );

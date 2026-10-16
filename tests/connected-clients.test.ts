@@ -24,6 +24,18 @@ test("connected-client validator accepts HTTPS and rejects embedded credentials"
   assert.equal(connectedClientBaseUrlSchema.safeParse("https://user:pass@example.com").success, false);
 });
 
+test("authenticated connected clients must use HTTPS", () => {
+  assert.equal(createConnectedClientSchema.safeParse({
+    ...valid,
+    baseUrl: "http://inventory.example.com/api",
+  }).success, false);
+  assert.equal(createConnectedClientSchema.safeParse({
+    name: "Public API",
+    baseUrl: "http://inventory.example.com/api",
+    authType: "NONE",
+  }).success, true);
+});
+
 test("connected-client validator enforces slug and authConfig rules", () => {
   assert.equal(connectedClientSlugSchema.safeParse("inventory-api").success, true);
   assert.equal(connectedClientSlugSchema.safeParse("Not A Slug").success, false);

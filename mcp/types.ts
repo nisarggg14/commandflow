@@ -42,7 +42,7 @@ export interface AuditLogEntry {
   company: string;
   timestamp: string;
   duration: number;
-  status: "SUCCESS" | "FAILED";
+  status: "SUCCESS" | "FAILED" | "PENDING";
   riskLevel?: string;
   mfaRequired?: boolean;
   mfaResult?: "SUCCESS" | "FAILED" | "NOT_REQUIRED";
@@ -75,6 +75,7 @@ export interface MCPTool<TInput = unknown, TOutput = unknown> {
 export interface ToolExecutionResult<T = unknown> {
   success: boolean;
   tool: string;
+  outcome?: "APPROVAL_REQUIRED";
   data?: T;
   message?: string;
   error?: {

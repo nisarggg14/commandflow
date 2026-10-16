@@ -26,6 +26,7 @@ interface RuntimeMetrics {
   totalExecutions: number;
   successfulExecutions: number;
   failedExecutions: number;
+  pendingApprovals: number;
   averageExecutionTime: number;
   lastExecution: string | null;
 }
@@ -35,6 +36,7 @@ export class CommandFlowMCPServer {
     totalExecutions: 0,
     successfulExecutions: 0,
     failedExecutions: 0,
+    pendingApprovals: 0,
     averageExecutionTime: 0,
     lastExecution: null,
   };
@@ -61,6 +63,7 @@ export class CommandFlowMCPServer {
     let mfaResult: "SUCCESS" | "FAILED" | "NOT_REQUIRED" = "NOT_REQUIRED";
     let validationCompleted = false;
     let executionStarted = false;
+    let approvalRequired = false;
 
     let approvalId: string | null = null;
 
@@ -114,6 +117,8 @@ export class CommandFlowMCPServer {
           });
 
           approvalId = createdApproval.id;
+          approvalRequired = true;
+          traceHooks?.onStageComplete?.("tool-selection-validation");
           throw new PermissionDeniedError(`High-risk tool ${tool.name} requires a separate administrator approval before execution. Approval ${createdApproval.id} is pending.`);
         }
 
@@ -187,7 +192,7 @@ export class CommandFlowMCPServer {
         details: "Executed successfully",
       });
 
-      this.recordMetric(duration, true);
+      this.recordMetric(duration, "SUCCESS");
 
       return {
         success: true,
@@ -197,7 +202,12 @@ export class CommandFlowMCPServer {
       };
     } catch (error) {
       const duration = Date.now() - startedAt;
-      const message = error instanceof Error ? error.message : "Unknown error";
+      const internalMessage = error instanceof Error ? error.message : "Unknown error";
+      const message = approvalRequired
+        ? internalMessage
+        : error instanceof PermissionDeniedError || error instanceof ValidationError || error instanceof ToolNotFoundError
+          ? internalMessage
+          : "Tool execution failed. Please try again.";
 
       if (approvalId && executionStarted) await markApprovalFailed(this.context.prisma, approvalId, this.context.companyId);
 
@@ -205,11 +215,11 @@ export class CommandFlowMCPServer {
 
       if (executionStarted) {
         traceHooks?.onStageFailed?.("tool-execution", message);
-      } else if (!validationCompleted) {
+      } else if (!validationCompleted && !approvalRequired) {
         traceHooks?.onStageFailed?.("tool-selection-validation", message);
       }
 
-      if (mfaRequired) {
+      if (mfaRequired && !approvalRequired) {
         mfaResult = "FAILED";
       }
 
@@ -219,19 +229,20 @@ export class CommandFlowMCPServer {
         company: this.context.companyId,
         timestamp: new Date().toISOString(),
         duration,
-        status: "FAILED",
+        status: approvalRequired ? "PENDING" : "FAILED",
         riskLevel,
         mfaRequired,
         mfaResult,
-        details: redactAuditText(message),
-        errorMessage: redactAuditText(message),
+        details: approvalRequired ? "Awaiting administrator approval" : message,
+        errorMessage: approvalRequired ? undefined : message,
       });
 
-      this.recordMetric(duration, false);
+      this.recordMetric(duration, approvalRequired ? "PENDING" : "FAILED");
 
       return {
         success: false,
         tool: name,
+        ...(approvalRequired ? { outcome: "APPROVAL_REQUIRED" as const } : {}),
         message,
         error: {
           name: error instanceof Error ? error.name : "ExecutionError",
@@ -339,7 +350,7 @@ export class CommandFlowMCPServer {
         await this.context.prisma.activityLog.create({
           data: {
             action: entry.tool,
-            status: entry.status === "SUCCESS" ? "SUCCESS" : "FAILED",
+            status: entry.status,
             details: JSON.stringify({
               tool: entry.tool,
               user: entry.user,
@@ -348,7 +359,11 @@ export class CommandFlowMCPServer {
               errorMessage: entry.errorMessage ? redactAuditText(entry.errorMessage) : undefined,
               riskLevel: entry.riskLevel,
               connectedClientId: this.context.connectedClientId ?? null,
-              safeOperationSummary: entry.status === "SUCCESS" ? "Command executed" : "Command failed",
+              safeOperationSummary: entry.status === "SUCCESS"
+                ? "Command executed"
+                : entry.status === "PENDING"
+                  ? "Awaiting administrator approval"
+                  : "Command failed",
             }),
             userId: this.context.userId,
             companyId: this.context.companyId,
@@ -423,13 +438,15 @@ export class CommandFlowMCPServer {
     return { type: "unknown" };
   }
 
-  private recordMetric(duration: number, success: boolean): void {
+  private recordMetric(duration: number, outcome: "SUCCESS" | "FAILED" | "PENDING"): void {
     this.metricsState.totalExecutions += 1;
 
-    if (success) {
+    if (outcome === "SUCCESS") {
       this.metricsState.successfulExecutions += 1;
-    } else {
+    } else if (outcome === "FAILED") {
       this.metricsState.failedExecutions += 1;
+    } else {
+      this.metricsState.pendingApprovals += 1;
     }
 
     const total = this.metricsState.totalExecutions;

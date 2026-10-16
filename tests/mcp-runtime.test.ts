@@ -63,6 +63,58 @@ test("order tools are registered and price changes require high-risk MFA", () =>
   assert.equal(updateStock?.requiresMfaStepUp, false);
 });
 
+test("order risk classifications, schemas, and permissions are enforced", () => {
+  const tools = createDefaultTools();
+  const getTool = (name: string) => {
+    const tool = tools.find((candidate) => candidate.name === name);
+    assert.ok(tool);
+    return tool;
+  };
+  const updateOrderStatus = getTool("orders.updateOrderStatus");
+  const cancelOrder = getTool("orders.cancelOrder");
+
+  assert.equal(updateOrderStatus.riskLevel, "MEDIUM");
+  assert.deepEqual(updateOrderStatus.permissions, [Permission.MANAGER, Permission.ADMIN]);
+  assert.equal(updateOrderStatus.inputSchema.safeParse({ orderId: "order-1", status: "PROCESSING" }).success, true);
+  assert.equal(updateOrderStatus.inputSchema.safeParse({ orderId: "order-1", status: "CANCELLED" }).success, false);
+  assert.equal(cancelOrder.riskLevel, "HIGH");
+  assert.equal(cancelOrder.requiresMfaStepUp, true);
+  assert.equal(cancelOrder.mfaPurpose, "orders.cancelOrder");
+  assert.deepEqual(cancelOrder.permissions, [Permission.ADMIN]);
+
+  assert.equal(getTool("products.adjustPrice").riskLevel, "HIGH");
+  assert.equal(getTool("products.adjustPrice").requiresMfaStepUp, true);
+  assert.equal(getTool("products.updateStock").riskLevel, "MEDIUM");
+});
+
+test("order status update and cancellation retain role restrictions", () => {
+  const updateOrderStatus = createDefaultTools().find((tool) => tool.name === "orders.updateOrderStatus");
+  const cancelOrder = createDefaultTools().find((tool) => tool.name === "orders.cancelOrder");
+  assert.ok(updateOrderStatus);
+  assert.ok(cancelOrder);
+  assert.throws(() => createTestServer(Permission.VIEWER).authorize(updateOrderStatus), /does not have permission/i);
+  assert.throws(() => createTestServer(Permission.VIEWER).authorize(cancelOrder), /does not have permission/i);
+  assert.doesNotThrow(() => createTestServer(Permission.MANAGER).authorize(updateOrderStatus));
+  assert.throws(() => createTestServer(Permission.MANAGER).authorize(cancelOrder), /does not have permission/i);
+  assert.doesNotThrow(() => createTestServer(Permission.ADMIN).authorize(updateOrderStatus));
+  assert.doesNotThrow(() => createTestServer(Permission.ADMIN).authorize(cancelOrder));
+});
+
+test("UI tool risk classifications match their definitions", () => {
+  const tools = createDefaultTools();
+  const getTool = (name: string) => {
+    const tool = tools.find((candidate) => candidate.name === name);
+    assert.ok(tool);
+    return tool;
+  };
+  for (const name of ["ui.setTheme", "ui.setBackground", "ui.setAccentColor", "frontend.updateTheme", "frontend.updateBackground"]) {
+    assert.equal(getTool(name).riskLevel, "LOW");
+  }
+  assert.equal(getTool("frontend.updateNavbar").riskLevel, "MEDIUM");
+  assert.equal(getTool("frontend.updateBranding").riskLevel, "HIGH");
+  assert.equal(getTool("frontend.updateBranding").requiresMfaStepUp, true);
+  assert.equal(getTool("frontend.updateBranding").mfaPurpose, "frontend.updateBranding");
+});
 test("user queries omit password and MFA secrets", async () => {
   const getUsersTool = createDefaultTools().find((tool) => tool.name === "users.getUsers");
   assert.ok(getUsersTool);

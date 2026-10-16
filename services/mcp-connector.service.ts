@@ -86,6 +86,10 @@ async function buildConnection(client: {
     throw new Error("Connected client authentication type is not supported.");
   }
 
+  if (client.authType !== "NONE" && parsedUrl.protocol !== "https:") {
+    throw new Error("Authenticated connected clients must use HTTPS.");
+  }
+
   return {
     baseUrl: client.baseUrl.replace(/\/+$/, ""),
     authType: client.authType,

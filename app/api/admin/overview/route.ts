@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticate } from "@/lib/auth";
 import { requireRole } from "@/lib/authorization";
 import { prisma } from "@/lib/prisma";
-import { ForbiddenError, UnauthorizedError } from "@/lib/errors";
+import { safeApiErrorResponse } from "@/lib/api-error-response";
 
 export async function GET(req: NextRequest) {
   try {
@@ -20,7 +20,6 @@ export async function GET(req: NextRequest) {
     ]);
     return NextResponse.json({ success: true, overview: { totalUsers, activeUsers, inactiveUsers: totalUsers - activeUsers, connectedClients, commandCount, pendingApprovals, failedOperations, highRiskOperations: highRisk, recentActivity: recentActivity.map((entry) => ({ id: entry.id, action: entry.action, status: entry.status, timestamp: entry.createdAt.toISOString(), user: entry.user, client: entry.connectedClient })) } });
   } catch (error) {
-    const status = error instanceof UnauthorizedError ? 401 : error instanceof ForbiddenError ? 403 : 500;
-    return NextResponse.json({ success: false, message: error instanceof Error ? error.message : "Unable to load overview." }, { status });
+    return safeApiErrorResponse(error, "api.admin.overview", "Unable to load overview.");
   }
 }

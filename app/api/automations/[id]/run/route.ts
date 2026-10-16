@@ -6,6 +6,8 @@ import { prisma } from "@/lib/prisma";
 import { createCommandServer } from "@/services/tool.service";
 import { getConnectedClientToolNames } from "@/services/mcp-connector.service";
 import { Permission } from "@/mcp/types";
+import { getAutomationExecutionStatus } from "@/lib/execution-status";
+import { safeApiErrorResponse } from "@/lib/api-error-response";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   let claimedExecution = false;
@@ -27,10 +29,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const enabled = await getConnectedClientToolNames(row.connectedClientId, actor.companyId, prisma);
     const server = createCommandServer(actor.id, actor.companyId, actor.role as Permission, undefined, row.connectedClientId, enabled);
     const result = await server.executeTool(row.toolName, args);
-    await prisma.$executeRaw`UPDATE "Automation" SET "lastExecutionStatus" = ${result.success ? "SUCCEEDED" : "FAILED"} WHERE "id" = ${row.id} AND "lastExecutionKey" = ${requestedKey} AND "lastExecutionStatus" = ${"RUNNING"}`;
-    return NextResponse.json({ success: result.success, result });
+    const status = getAutomationExecutionStatus(result);
+    await prisma.$executeRaw`UPDATE "Automation" SET "lastExecutionStatus" = ${status} WHERE "id" = ${row.id} AND "lastExecutionKey" = ${requestedKey} AND "lastExecutionStatus" = ${"RUNNING"}`;
+    return NextResponse.json({ success: status === "SUCCEEDED", status, result });
   } catch (e) {
-    if (claimedExecution && automationId) await prisma.$executeRaw`UPDATE "Automation" SET "lastExecutionStatus" = ${"FAILED"} WHERE "id" = ${automationId} AND "lastExecutionStatus" = ${"RUNNING"}`;
-    return NextResponse.json({ success: false, message: e instanceof Error ? e.message : "Automation run failed." }, { status: 400 });
+    if (claimedExecution && automationId) {
+      try {
+        await prisma.$executeRaw`UPDATE "Automation" SET "lastExecutionStatus" = ${"FAILED"} WHERE "id" = ${automationId} AND "lastExecutionStatus" = ${"RUNNING"}`;
+      } catch (statusError) {
+        console.error("[api.automations.run] failed to record failure status", {
+          errorName: statusError instanceof Error ? statusError.name : "UnknownError",
+        });
+      }
+    }
+    return safeApiErrorResponse(e, "api.automations.run", "Automation run failed.", 400);
   }
 }

@@ -39,6 +39,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, message: error.message }, { status: 401 });
     }
 
-    return NextResponse.json({ success: false, message: error instanceof Error ? error.message : "MFA setup failed." }, { status: 500 });
+    console.error("[auth.mfa.setup] operation failed", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
+    return NextResponse.json({ success: false, message: "MFA setup failed. Please try again later." }, { status: 500 });
   }
 }

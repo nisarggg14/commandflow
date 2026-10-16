@@ -6,16 +6,6 @@ import { assertProductionEnvironment } from "@/lib/production-env";
 
 assertProductionEnvironment();
 
-const apiKey = process.env.GEMINI_API_KEY;
-
-if (!apiKey) {
-  throw new Error("GEMINI_API_KEY is missing in .env");
-}
-
-const ai = new GoogleGenAI({
-  apiKey,
-});
-
 function normalizeModelName(model?: string): string {
   const trimmed = model?.trim();
 
@@ -62,6 +52,9 @@ export async function generateResponse(
   prompt: string
 ): Promise<LLMResponse> {
   try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error("Gemini API key is not configured.");
+    const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
       model: MODEL,
       contents: prompt,
@@ -72,7 +65,9 @@ export async function generateResponse(
       text: response.text ?? "",
     };
   } catch (error) {
-    console.error("Gemini Error:", error);
+    console.error("[llm] Gemini request failed", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
     if (isGeminiQuotaError(error)) {
       throw new GeminiQuotaError();
     }

@@ -32,8 +32,17 @@ export function sanitizeCommand(raw: string): ParsedCommand {
     const parsed = JSON.parse(payload);
 
     if (isPlainObject(parsed)) {
+      const hasAction = Object.prototype.hasOwnProperty.call(parsed, "action");
       if (typeof parsed.tool === "string") {
+        if (parsed.tool.trim().length === 0 || hasAction) {
+          return { action: "unknown" };
+        }
+
         const hasArguments = Object.prototype.hasOwnProperty.call(parsed, "arguments");
+        const allowedProperties = hasArguments ? ["tool", "arguments"] : ["tool", "parameters"];
+        if (Object.keys(parsed).some((key) => !allowedProperties.includes(key))) {
+          return { action: "unknown" };
+        }
         const parsedArguments = hasArguments
           ? (isPlainObject(parsed.arguments) ? parsed.arguments : null)
           : (isPlainObject(parsed.parameters) ? parsed.parameters : null);
@@ -48,7 +57,7 @@ export function sanitizeCommand(raw: string): ParsedCommand {
         };
       }
 
-      if (parsed.action === "unknown") {
+      if (parsed.action === "unknown" && Object.keys(parsed).length === 1) {
         return { action: "unknown" };
       }
     }

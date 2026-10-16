@@ -4,7 +4,7 @@ import { enforceRateLimit } from "@/lib/rate-limit";
 import { processChat } from "@/services/chat.service";
 import { authenticate } from "@/lib/auth";
 import { GeminiQuotaError } from "@/services/llm.service";
-import { NotFoundError } from "@/lib/errors";
+import { AuthenticationServiceError, NotFoundError, UnauthorizedError } from "@/lib/errors";
 
 import { chatRequestSchema } from "@/validators/chat.validator";
 
@@ -37,7 +37,20 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Chat API Error:", error);
+    console.error("[api.chat] request failed", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
+
+    if (error instanceof UnauthorizedError) {
+      return NextResponse.json({ success: false, message: error.message }, { status: 401 });
+    }
+
+    if (error instanceof AuthenticationServiceError) {
+      return NextResponse.json(
+        { success: false, message: "Authentication service unavailable. Please try again later." },
+        { status: 503 }
+      );
+    }
 
     if (error instanceof Error && error.message === "Conversation not found.") {
       return NextResponse.json(
@@ -67,10 +80,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Internal Server Error",
+        message: "Chat service unavailable. Please try again later.",
       },
       { status: 500 }
     );

@@ -4,7 +4,7 @@ import { EXECUTION_STAGE_DEFINITIONS } from '@/types/execution-trace'
 
 export interface CommandExecutionPayload {
   type: 'execution'
-  status: 'SUCCESS' | 'FAILED' | 'UNKNOWN'
+  status: 'SUCCESS' | 'FAILED' | 'UNKNOWN' | 'PENDING_APPROVAL'
   toolName?: string | null
   rowsAffected?: number
   executionTimeMs?: number
@@ -38,7 +38,7 @@ function isValidStageList(value: unknown): value is ExecutionStage[] {
   return new Set(value.map((stage) => stage.id)).size === EXECUTION_STAGE_DEFINITIONS.length
 }
 
-function badge(status: CommandExecutionPayload['status']) { return status === 'SUCCESS' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : status === 'FAILED' ? 'border-destructive/30 bg-destructive/10 text-destructive' : 'border-border bg-muted text-muted-foreground' }
+function badge(status: CommandExecutionPayload['status']) { return status === 'SUCCESS' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : status === 'FAILED' ? 'border-destructive/30 bg-destructive/10 text-destructive' : status === 'PENDING_APPROVAL' ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'border-border bg-muted text-muted-foreground' }
 
 function stageStyle(status: ExecutionStageStatus) {
   if (status === 'completed') return 'border-foreground bg-foreground text-background'

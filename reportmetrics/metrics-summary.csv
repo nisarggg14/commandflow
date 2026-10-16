@@ -1,0 +1,59 @@
+metric_name,formula,numerator,denominator,value,unit,sample_count,environment,evidence,status,limitations
+api_routes,count(route.ts),21,1,21,count,21,Windows Node v24.8.0,app/api/**/route.ts,measured,Structural count
+registered_mcp_tools,count(unique registered tools),33,1,33,count,33,Windows Node v24.8.0,mcp/tools/index.ts,measured,Duplicate definitions excluded
+source_lines,count(all lines),7193,1,7193,lines,112,Windows,PowerShell audit,measured,Size is not quality evidence
+source_nonblank_lines,count(nonblank lines),6243,1,6243,lines,112,Windows,PowerShell audit,measured,Comments included
+mcp_test_declarations,count(test declarations),63,1,63,count,63,Windows,rg test declarations,measured,Static inventory; runner blocked
+prisma_models,count(model declarations),12,1,12,count,12,Windows,prisma/schema.prisma,measured,None
+prisma_migrations,count(migration directories),7,1,7,count,7,Windows,prisma/migrations,measured,None
+explicit_risk_tools,count(riskLevel fields),25,33,25,count,33,Windows Node v24.8.0,runtime tool metadata,measured,8 tools use registry LOW default
+default_low_tools,count(missing riskLevel),8,33,8,count,33,Windows Node v24.8.0,runtime tool metadata,measured,Effective risk is LOW after registry default
+low_risk_tools,effective LOW tools,20,33,20,count,33,Windows Node v24.8.0,runtime tool metadata,measured,None
+medium_risk_tools,effective MEDIUM tools,7,33,7,count,33,Windows Node v24.8.0,runtime tool metadata,measured,None
+high_risk_tools,effective HIGH tools,6,33,6,count,33,Windows Node v24.8.0,runtime tool metadata,measured,None
+high_risk_mfa_tools,HIGH tools with MFA flag,6,6,100,percent,6,Windows Node v24.8.0,runtime tool metadata,measured,Approval/MFA runtime tests blocked
+control_fixture_success_rate,correct observed expected outcomes / fixtures,8,8,100,percent,8,Windows Node v24.8.0,benchmark-results.csv,measured,Fixtures test local controls not Gemini intent accuracy
+unauthorized_execution_prevention_rate,blocked unauthorized / unauthorized attempts,2,2,100,percent,2,Windows Node v24.8.0,benchmark-results.csv,measured,Only viewer order and manager cancellation fixtures
+unsafe_input_rejection_rate,rejected unsafe/invalid inputs / labeled unsafe inputs,3,3,100,percent,3,Windows Node v24.8.0,benchmark-results.csv,measured,Schema cases only; finite fixture set
+unknown_tool_rejection_rate,rejected unknown tools / unknown tool attempts,1,1,100,percent,1,Windows Node v24.8.0,benchmark-results.csv,measured,Single unknown operation case
+ssrf_loopback_rejection_rate,blocked loopback attempts / loopback attempts,1,1,100,percent,1,Windows Node v24.8.0,benchmark-results.csv and lib/ssrf.ts,measured,No external network target
+schema_validation_mean,mean(sample durations),-, -,0.00077447,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Fixture-only local function; not live Zod/MCP latency
+schema_validation_p50,p50(sample durations),-, -,0.0004,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+schema_validation_p95,p95(sample durations),-, -,0.0011,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+schema_validation_p99,p99(sample durations),-, -,0.0015,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+schema_validation_throughput,samples / batch wall-clock seconds,-, -,913834.5411,requests_per_second,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Fixture-only batch wall clock
+authorization_mean,mean(sample durations),-, -,0.00045620,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Fixture-only local function; not live authorization latency
+authorization_p50,p50(sample durations),-, -,0.0004,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+authorization_p95,p95(sample durations),-, -,0.0004,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+authorization_p99,p99(sample durations),-, -,0.0024,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+authorization_throughput,samples / batch wall-clock seconds,-, -,1698167.6771,requests_per_second,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Fixture-only batch wall clock
+direct_ui_baseline_mean,mean(sample durations),-, -,0.00058010,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Fixture-only direct baseline
+mcp_dispatch_ui_mean,mean(sample durations),-, -,0.00047438,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Fixture-only mocked pipeline; not actual MCP dispatch
+mcp_dispatch_ui_p50,p50(sample durations),-, -,0.0004,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+mcp_dispatch_ui_p95,p95(sample durations),-, -,0.0007,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+mcp_dispatch_ui_p99,p99(sample durations),-, -,0.0010,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+mcp_dispatch_ui_min,min(sample durations),-, -,0.0003,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Fixture-only canonical raw CSV
+mcp_dispatch_ui_max,max(sample durations),-, -,0.2523,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,No outlier removal; fixture-only
+mcp_dispatch_ui_stddev,population standard deviation,-, -,0.0027727739929,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Population SD; fixture-only
+mcp_dispatch_ui_throughput,samples / batch wall-clock seconds,-, -,1601717.0407,requests_per_second,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Fixture-only batch wall clock
+direct_ui_baseline_p50,p50(sample durations),-, -,0.0004,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+direct_ui_baseline_p95,p95(sample durations),-, -,0.0009,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+direct_ui_baseline_p99,p99(sample durations),-, -,0.0013,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Nearest-rank percentile; fixture-only
+direct_ui_baseline_min,min(sample durations),-, -,0.0003,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Fixture-only canonical raw CSV
+direct_ui_baseline_max,max(sample durations),-, -,0.2238,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,No outlier removal; fixture-only
+direct_ui_baseline_stddev,population standard deviation,-, -,0.0032313740096,milliseconds,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Population SD; fixture-only
+direct_ui_baseline_throughput,samples / batch wall-clock seconds,-, -,1325012.2564,requests_per_second,10000,Windows Node v24.8.0,benchmark-results.csv,measured,Fixture-only batch wall clock
+mcp_absolute_overhead,fixture pipeline mean - fixture baseline mean,-, -,-0.00010572,milliseconds,10000 pairs,Windows Node v24.8.0,derived from benchmark-results.csv,derived,Non-comparable mock operations; not an MCP performance claim
+mcp_relative_overhead,(fixture pipeline - fixture baseline) / fixture baseline * 100,-, -,-18.2244,percent,10000 pairs,Windows Node v24.8.0,derived from benchmark-results.csv,derived,Non-comparable mock operations; not a framework comparison
+mcp_speedup,fixture baseline / fixture pipeline,-, -,1.22285931,ratio,10000 pairs,Windows Node v24.8.0,derived from benchmark-results.csv,derived,Non-comparable mock operations; not an MCP performance claim
+live_llm_tool_accuracy,correct selected tools / supported commands,-, -,NOT MEASURED,percent,0,Windows Node v24.8.0,services/llm.service.ts,not measured,GEMINI_API_KEY unavailable; no provider calls
+argument_exact_match_accuracy,exact validated args / applicable live commands,-, -,NOT MEASURED,percent,0,Windows Node v24.8.0,services/command-parser.service.ts,not measured,No live Gemini parser evaluation
+execution_success_rate,successful valid authorized operations / attempted valid authorized operations,-, -,NOT MEASURED,percent,0,Windows Node v24.8.0,external client path,not measured,External API execution not safely available
+mock_api_latency,mean mock request latency,-, -,NOT MEASURED,milliseconds,0,Windows Node v24.8.0,lib/ssrf.ts,not measured,Loopback mock rejected by SSRF guard
+npm_test_result,passed tests / discovered tests,0,63,NOT MEASURED,percent,63,Windows Node v24.8.0,npm test,blocked,spawn EPERM before test bodies
+TypeScript_typecheck,exit status,1,1,PASSED,string,1,Windows Node v24.8.0,npm run typecheck,measured,None
+lint_result,exit status,0,1,NOT AVAILABLE,string,1,Windows Node v24.8.0,npm run lint,not measured,ESLint not installed
+build_result,completed build / attempted build,0,1,INCOMPLETE,string,1,Windows Node v24.8.0,npm run build,incomplete,Stopped after prolonged no progress
+benchmark_csv_records,latency rows plus deterministic fixtures,40008,1,40008,count,40008,Windows Node v24.8.0,benchmark-results.csv,measured,40000 latency rows plus 8 fixtures; parsed with RFC CSV after serialization repair
+benchmark_latency_samples,latency rows,40000,1,40000,count,40000,Windows Node v24.8.0,benchmark-results.csv,measured,Four operations with 10000 samples each
+benchmark_fixture_rows,deterministic fixture rows,8,1,8,count,8,Windows Node v24.8.0,benchmark-results.csv,measured,All fixture outcomes matched expected outcomes

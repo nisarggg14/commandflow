@@ -34,7 +34,7 @@ export const connectedClientBaseUrlSchema = z.string()
 export const connectedClientAuthConfigSchema = z.record(z.string(), z.string().max(2000)).optional();
 
 function requireAuthConfigForAuthType(
-  data: { authType?: string; authConfig?: Record<string, string> },
+  data: { authType?: string; authConfig?: Record<string, string>; baseUrl?: string },
   ctx: z.RefinementCtx,
 ) {
   if (data.authType && data.authType !== "NONE" && (!data.authConfig || Object.keys(data.authConfig).length === 0)) {
@@ -43,6 +43,20 @@ function requireAuthConfigForAuthType(
       message: `authConfig is required when authType is ${data.authType}.`,
       path: ["authConfig"],
     });
+  }
+
+  if (data.authType && data.authType !== "NONE" && data.baseUrl) {
+    try {
+      if (new URL(data.baseUrl).protocol !== "https:") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Authenticated connected clients must use HTTPS.",
+          path: ["baseUrl"],
+        });
+      }
+    } catch {
+      return;
+    }
   }
 }
 

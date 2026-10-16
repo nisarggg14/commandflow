@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ForbiddenError } from "@/lib/errors";
 import { authenticate } from "@/lib/auth";
-import { ForbiddenError, UnauthorizedError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
+import { safeApiErrorResponse } from "@/lib/api-error-response";
 
 function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) {
@@ -119,20 +120,6 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ success: true, logs: safeLogs });
   } catch (error) {
-    if (error instanceof UnauthorizedError) {
-      return NextResponse.json({ success: false, message: error.message }, { status: 401 });
-    }
-
-    if (error instanceof ForbiddenError) {
-      return NextResponse.json({ success: false, message: error.message }, { status: 403 });
-    }
-
-    return NextResponse.json(
-      {
-        success: false,
-        message: error instanceof Error ? error.message : "Unable to load audit logs.",
-      },
-      { status: 500 }
-    );
+    return safeApiErrorResponse(error, "api.logs", "Unable to load audit logs.");
   }
 }

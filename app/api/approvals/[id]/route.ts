@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ForbiddenError } from "@/lib/errors";
 import { authenticate } from "@/lib/auth";
-import { UnauthorizedError, ForbiddenError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
 import { getApprovalById } from "@/services/approval.service";
+import { safeApiErrorResponse } from "@/lib/api-error-response";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -21,14 +22,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     return NextResponse.json({ success: true, approval });
   } catch (error) {
-    if (error instanceof UnauthorizedError) {
-      return NextResponse.json({ success: false, message: error.message }, { status: 401 });
-    }
-
-    if (error instanceof ForbiddenError) {
-      return NextResponse.json({ success: false, message: error.message }, { status: 403 });
-    }
-
-    return NextResponse.json({ success: false, message: error instanceof Error ? error.message : "Unable to load approval." }, { status: 500 });
+    return safeApiErrorResponse(error, "api.approvals.get", "Unable to load approval.");
   }
 }

@@ -32,3 +32,13 @@ export class ValidationFailedError extends Error {
     this.name = "ValidationFailedError";
   }
 }
+
+export class AuthenticationServiceError extends Error {
+  readonly cause?: unknown;
+
+  constructor(message = "Authentication service unavailable.", cause?: unknown) {
+    super(message);
+    this.name = "AuthenticationServiceError";
+    this.cause = cause;
+  }
+}

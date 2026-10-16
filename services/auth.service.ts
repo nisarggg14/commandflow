@@ -3,7 +3,7 @@ import { hashPassword, comparePassword } from "@/lib/bcrypt";
 import { generateToken, hashSessionToken, verifyToken } from "@/lib/jwt";
 import { registerSchema, loginSchema } from "@/validators/auth.validator";
 import { UserRole } from "@prisma/client";
-import { UnauthorizedError } from "@/lib/errors";
+import { AuthenticationServiceError, UnauthorizedError } from "@/lib/errors";
 
 export function resolvePublicRegistrationRole(): UserRole {
   return UserRole.ADMIN;
@@ -79,15 +79,20 @@ export async function registerUser(data: unknown) {
 export async function loginUser(data: unknown) {
   const validatedData = loginSchema.parse(data);
 
-  const user = await prisma.user.findUnique({
-    where: {
-      email: validatedData.email,
-    },
-    include: { company: { select: { id: true, name: true, slug: true } } },
-  });
+  let user;
+  try {
+    user = await prisma.user.findUnique({
+      where: {
+        email: validatedData.email,
+      },
+      include: { company: { select: { id: true, name: true, slug: true } } },
+    });
+  } catch (error) {
+    throw new AuthenticationServiceError("Authentication data store unavailable.", error);
+  }
 
   if (!user) {
-    throw new Error("Invalid email or password");
+    throw new UnauthorizedError("Invalid email or password.");
   }
 
   if (!user.active) throw new UnauthorizedError("This account is disabled.");
@@ -96,7 +101,7 @@ export async function loginUser(data: unknown) {
   const isPasswordValid = await comparePassword(validatedData.password, user.password);
 
   if (!isPasswordValid) {
-    throw new Error("Invalid email or password");
+    throw new UnauthorizedError("Invalid email or password.");
   }
 
   const token = generateToken({
@@ -106,7 +111,11 @@ export async function loginUser(data: unknown) {
     companyId: user.company.id,
   });
 
-  await prisma.session.create({ data: { token: hashSessionToken(token), userId: user.id, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) } });
+  try {
+    await prisma.session.create({ data: { token: hashSessionToken(token), userId: user.id, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) } });
+  } catch (error) {
+    throw new AuthenticationServiceError("Authentication session store unavailable.", error);
+  }
   return {
     success: true,
     message: "Login successful",
@@ -116,12 +125,17 @@ export async function loginUser(data: unknown) {
 }
 
 export async function getCurrentUser(userId: string) {
-  const user = await prisma.user.findUnique({
-    where: {
-      id: userId,
-    },
-    select: { id: true, name: true, email: true, role: true, active: true, mfaEnabled: true, companyId: true, company: { select: { id: true, name: true, slug: true } } },
-  });
+  let user;
+  try {
+    user = await prisma.user.findUnique({
+      where: {
+        id: userId,
+      },
+      select: { id: true, name: true, email: true, role: true, active: true, mfaEnabled: true, companyId: true, company: { select: { id: true, name: true, slug: true } } },
+    });
+  } catch (error) {
+    throw new AuthenticationServiceError("Authentication service unavailable. Please try again later.", error);
+  }
 
   if (!user || !user.active || !user.company || user.company.id !== user.companyId) throw new UnauthorizedError("User account or company association is unavailable.");
 

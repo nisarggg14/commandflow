@@ -1,7 +1,7 @@
 import type { ConnectedClient, Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/lib/prisma";
 import { encryptSecret } from "@/lib/mfa";
-import { ConflictError, NotFoundError } from "@/lib/errors";
+import { ConflictError, NotFoundError, ValidationFailedError } from "@/lib/errors";
 import {
   createConnectedClientSchema,
   updateConnectedClientSchema,
@@ -94,6 +94,11 @@ export async function updateConnectedClient(id: string, rawInput: unknown, actin
   const input: UpdateConnectedClientInput = updateConnectedClientSchema.parse(rawInput);
   const existing = await db.connectedClient.findFirst({ where: { id, companyId: actingUser.companyId } });
   if (!existing) throw new NotFoundError("Connected client not found.");
+  const nextAuthType = input.authType ?? existing.authType;
+  const nextBaseUrl = input.baseUrl ?? existing.baseUrl;
+  if (nextAuthType !== "NONE" && new URL(nextBaseUrl).protocol !== "https:") {
+    throw new ValidationFailedError("Authenticated connected clients must use HTTPS.");
+  }
   if (input.slug && input.slug !== existing.slug) await assertSlugAvailable(db, actingUser.companyId, input.slug, id);
 
   const data: Prisma.ConnectedClientUpdateInput = {};

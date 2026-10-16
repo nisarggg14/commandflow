@@ -74,6 +74,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, message: error.message }, { status: 401 });
     }
 
-    return NextResponse.json({ success: false, message: error instanceof Error ? error.message : "Verification failed." }, { status: 500 });
+    console.error("[auth.mfa.verify] operation failed", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
+    return NextResponse.json({ success: false, message: "MFA verification failed. Please try again later." }, { status: 500 });
   }
 }

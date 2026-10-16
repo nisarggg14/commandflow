@@ -2,6 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { enforceRateLimit, requestAddress } from "@/lib/rate-limit";
 import { registerUser } from "@/services/auth.service";
+import { ZodError } from "zod";
+
+const DUPLICATE_ACCOUNT_MESSAGE = "An account with this email already exists.";
+
+export function getRegistrationErrorResponse(error: unknown): { status: number; message: string } {
+  if (error instanceof ZodError) {
+    return { status: 400, message: "Invalid registration request." };
+  }
+
+  if (error instanceof Error && error.message === DUPLICATE_ACCOUNT_MESSAGE) {
+    return { status: 409, message: DUPLICATE_ACCOUNT_MESSAGE };
+  }
+
+  if (error instanceof Error && error.message === "A strong production password is required.") {
+    return { status: 400, message: error.message };
+  }
+
+  return { status: 500, message: "Registration failed. Please try again later." };
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -17,12 +36,12 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(safeResult, { status: 201 });
   } catch (error) {
-    return NextResponse.json(
-      {
-        message:
-          error instanceof Error ? error.message : "Registration failed",
-      },
-      { status: 400 }
-    );
+    const result = getRegistrationErrorResponse(error);
+    if (result.status === 500) {
+      console.error("[auth.register] registration failed", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+    }
+    return NextResponse.json({ success: false, message: result.message }, { status: result.status });
   }
 }

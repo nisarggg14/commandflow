@@ -4,10 +4,7 @@ import {
   createConversation,
   getConversations,
 } from "@/services/conversation.service";
-import {
-  UnauthorizedError,
-  ForbiddenError,
-} from "@/lib/errors";
+import { safeApiErrorResponse } from "@/lib/api-error-response";
 
 export async function POST(req: NextRequest) {
   try {
@@ -25,44 +22,7 @@ export async function POST(req: NextRequest) {
       status: 201,
     });
   } catch (error) {
-    console.error(error);
-
-    if (error instanceof UnauthorizedError) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: error.message,
-        },
-        {
-          status: 401,
-        }
-      );
-    }
-
-    if (error instanceof ForbiddenError) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: error.message,
-        },
-        {
-          status: 403,
-        }
-      );
-    }
-
-    return NextResponse.json(
-      {
-        success: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Internal Server Error",
-      },
-      {
-        status: 500,
-      }
-    );
+    return safeApiErrorResponse(error, "api.conversations.create", "Unable to create conversation.");
   }
 }
 
@@ -77,43 +37,6 @@ export async function GET(req: NextRequest) {
       conversations,
     });
   } catch (error) {
-    console.error(error);
-
-    if (error instanceof UnauthorizedError) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: error.message,
-        },
-        {
-          status: 401,
-        }
-      );
-    }
-
-    if (error instanceof ForbiddenError) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: error.message,
-        },
-        {
-          status: 403,
-        }
-      );
-    }
-
-    return NextResponse.json(
-      {
-        success: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Internal Server Error",
-      },
-      {
-        status: 500,
-      }
-    );
+    return safeApiErrorResponse(error, "api.conversations.list", "Unable to load conversations.");
   }
 }

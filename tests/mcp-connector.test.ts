@@ -47,6 +47,35 @@ test("MCP connector derives base URL and Authorization from the selected client"
   }
 });
 
+test("MCP connector refuses to send stored credentials to an HTTP endpoint", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = false;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    return Response.json({});
+  };
+
+  try {
+    const db = {
+      connectedClient: {
+        findFirst: async () => ({
+          baseUrl: "http://inventory.example.com/api",
+          authType: "BEARER",
+          authConfig: encryptSecret(JSON.stringify({ token: "connector-secret" })),
+        }),
+      },
+    };
+
+    await assert.rejects(
+      () => withAuthenticatedConnectedClient(fakeContext(db), () => getProduct("P1")),
+      /must use HTTPS/i,
+    );
+    assert.equal(fetchCalled, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("MCP connector enforces company/status selection and rejects unsafe base URLs", async () => {
   let fetchCalled = false;
   const originalFetch = globalThis.fetch;

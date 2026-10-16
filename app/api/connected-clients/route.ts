@@ -6,7 +6,7 @@ import { UnauthorizedError, ForbiddenError, ConflictError } from "@/lib/errors";
 import { createConnectedClient, listConnectedClients } from "@/services/connected-client.service";
 
 function errorResponse(error: unknown) {
-  console.error("Connected client request failed:", error instanceof Error ? error.message : "unknown error");
+  console.error("Connected client request failed:", error instanceof Error ? error.name : "UnknownError");
   if (error instanceof UnauthorizedError) return NextResponse.json({ success: false, message: error.message }, { status: 401 });
   if (error instanceof ForbiddenError) return NextResponse.json({ success: false, message: error.message }, { status: 403 });
   if (error instanceof ConflictError) return NextResponse.json({ success: false, message: error.message }, { status: 409 });

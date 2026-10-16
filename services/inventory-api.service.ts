@@ -70,6 +70,7 @@ export interface InventoryLowStockReport {
 }
 
 const INVENTORY_BASE_URL = (process.env.INVENTORY_API_BASE_URL ?? "http://localhost:5000").replace(/\/+$/, "");
+const INVENTORY_AUTH_TIMEOUT_MS = 10_000;
 
 const inventoryConnectionStorage = new AsyncLocalStorage<InventoryApiConnection>();
 
@@ -107,16 +108,24 @@ async function getInventoryToken(): Promise<string> {
     return inventoryToken;
   }
 
-  const response = await fetch(`${INVENTORY_BASE_URL}/auth/login`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      username,
-      password,
-    }),
-  });
+  const loginUrl = await assertSafeOutboundUrl(new URL("/auth/login", `${INVENTORY_BASE_URL}/`).toString());
+  let response: Response;
+  try {
+    response = await fetch(loginUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        username,
+        password,
+      }),
+      signal: AbortSignal.timeout(INVENTORY_AUTH_TIMEOUT_MS),
+      redirect: "manual",
+    });
+  } catch {
+    throw new Error("Inventory authentication is unavailable.");
+  }
 
   if (!response.ok) {
     throw new Error("Inventory authentication failed.");
