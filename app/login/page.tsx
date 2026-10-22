@@ -7,6 +7,9 @@ export default function LoginPage() {
   const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [mfaChallengeToken, setMfaChallengeToken] = useState('')
+  const [mfaCode, setMfaCode] = useState('')
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -32,9 +35,41 @@ export default function LoginPage() {
         return
       }
 
+      if (data.mfaRequired === true && typeof data.challengeToken === 'string') {
+        setMfaChallengeToken(data.challengeToken)
+        setIsLoading(false)
+        return
+      }
+
       router.push('/')
     } catch {
       setError('An unexpected error occurred. Please try again.')
+      setIsLoading(false)
+    }
+  }
+
+  const handleMfaSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+    setIsLoading(true)
+    try {
+      const response = await fetch('/api/auth/mfa/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          challengeToken: mfaChallengeToken,
+          ...(useRecoveryCode ? { recoveryCode: mfaCode } : { code: mfaCode }),
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok || data.success === false || data.mfaRequired) {
+        setError(data.message || 'MFA verification failed.')
+        setIsLoading(false)
+        return
+      }
+      router.push('/')
+    } catch {
+      setError('MFA verification is temporarily unavailable. Please try again.')
       setIsLoading(false)
     }
   }
@@ -50,6 +85,48 @@ export default function LoginPage() {
           <p className="text-muted-foreground text-sm">Enterprise AI Operating System</p>
         </div>
 
+        {mfaChallengeToken ? (
+          <form onSubmit={handleMfaSubmit} className="space-y-5">
+            <p className="text-sm text-muted-foreground">
+              Enter the current code from your authenticator app to finish signing in.
+            </p>
+            {error && (
+              <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive text-sm">
+                {error}
+              </div>
+            )}
+            <div className="space-y-2">
+              <label htmlFor="mfa-code" className="block text-sm font-medium text-foreground">
+                {useRecoveryCode ? 'Recovery code' : '6-digit authenticator code'}
+              </label>
+              <input
+                id="mfa-code"
+                type="text"
+                inputMode={useRecoveryCode ? 'text' : 'numeric'}
+                autoComplete="one-time-code"
+                value={mfaCode}
+                onChange={(event) => setMfaCode(event.target.value)}
+                maxLength={useRecoveryCode ? 32 : 6}
+                required
+                disabled={isLoading}
+                className="w-full px-4 py-3 rounded-lg bg-card border border-border text-foreground"
+              />
+            </div>
+            <button type="button" className="text-sm text-accent" onClick={() => { setUseRecoveryCode(!useRecoveryCode); setMfaCode(''); setError('') }}>
+              {useRecoveryCode ? 'Use an authenticator code' : 'Use a recovery code'}
+            </button>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-3 px-4 rounded-lg bg-accent text-accent-foreground font-semibold disabled:opacity-50"
+            >
+              {isLoading ? 'Verifying...' : 'Verify and sign in'}
+            </button>
+            <button type="button" className="w-full py-2 text-sm text-muted-foreground" onClick={() => { setMfaChallengeToken(''); setMfaCode(''); setError('') }}>
+              Back to sign in
+            </button>
+          </form>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && (
             <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive text-sm">
@@ -100,6 +177,7 @@ export default function LoginPage() {
             {isLoading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+        )}
 
         <p className="text-center text-sm text-muted-foreground">
           New to CommandFlow?{' '}

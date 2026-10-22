@@ -9,6 +9,7 @@ import { MessageBubble } from '@/components/message-bubble'
 import { EmptyState } from '@/components/empty-state'
 import { CommandExecutionCard, type CommandExecutionPayload } from '@/components/command-execution-card'
 import { ConnectedClientSwitcher } from '@/components/connected-client-switcher'
+import { chatSubmissionErrorMessage, createClientId } from '@/lib/chat-client'
 
 interface AuthUser {
   id: string
@@ -128,7 +129,9 @@ export default function Page() {
   const [mfaError, setMfaError] = useState('')
   const [mfaLoading, setMfaLoading] = useState(false)
   const [connectedClients, setConnectedClients] = useState<ConnectedClient[]>([])
+  const [connectedClientsError, setConnectedClientsError] = useState('')
   const [activeConnectedClientId, setActiveConnectedClientId] = useState<string | undefined>()
+  const [commandError, setCommandError] = useState('')
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const bootstrapStartedRef = useRef(false)
@@ -163,17 +166,23 @@ export default function Page() {
       const data = await res.json()
       setAuthUser(data.user)
 
+      const clientsRequest = fetch('/api/connected-clients?status=ACTIVE', {
+        credentials: 'include',
+      }).catch(() => null)
       const [clientsRes] = await Promise.all([
-        fetch('/api/connected-clients?status=ACTIVE', { credentials: 'include' }),
+        clientsRequest,
         handleNewChat(),
       ])
-      if (clientsRes.ok) {
-        const clientsData = await clientsRes.json()
-        const clients = Array.isArray(clientsData.connectedClients)
-          ? clientsData.connectedClients as ConnectedClient[]
-          : []
-        setConnectedClients(clients)
+      if (!clientsRes?.ok) {
+        setConnectedClientsError('Connected clients are temporarily unavailable.')
+        return
       }
+      const clientsData = await clientsRes.json()
+      const clients = Array.isArray(clientsData.connectedClients)
+        ? clientsData.connectedClients as ConnectedClient[]
+        : []
+      setConnectedClients(clients)
+      setConnectedClientsError('')
     }
 
     void loadUser()
@@ -227,11 +236,99 @@ export default function Page() {
   ) => {
     if (!activeConversationId) return
 
-    if (!options?.skipUserMessage) {
-      const userMessage: Message = {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: message,
+    setCommandError('')
+    setIsLoading(true)
+    try {
+      if (!options?.skipUserMessage) {
+        const userMessage: Message = {
+          id: createClientId(),
+          role: 'user',
+          content: message,
+        }
+
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === activeConversationId
+              ? {
+                  ...c,
+                  messages: [...c.messages, userMessage],
+                }
+              : c
+          )
+        )
+      }
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          conversationId: activeConversationId,
+          message,
+          mfaChallengeToken: options?.mfaChallengeToken,
+          connectedClientId: activeConnectedClientId ?? null,
+        }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok || !data.success) {
+        if (data.message === 'Selected connected client is unavailable.') {
+          setActiveConnectedClientId(undefined)
+          setConnectedClients((prev) => prev.filter((client) => client.id !== activeConnectedClientId))
+        }
+        const errorMessage: Message = {
+          id: createClientId(),
+          role: 'assistant',
+          content: data.message || 'The command could not be completed.',
+        }
+
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === activeConversationId
+              ? { ...c, messages: [...c.messages, errorMessage] }
+              : c
+          )
+        )
+        return
+      }
+
+      setActiveConnectedClientId(data.connectedClientId ?? undefined)
+      setConversations((prev) => prev.map((conversation) => (
+        conversation.id === activeConversationId
+          ? { ...conversation, connectedClientId: data.connectedClientId ?? null }
+          : conversation
+      )))
+
+      try {
+        const payload = JSON.parse(data.response) as CommandExecutionPayload & { message?: string }
+        applyUiControl(payload.data)
+
+        if (
+          payload.status === 'FAILED' &&
+          typeof payload.message === 'string' &&
+          (payload.message.includes('requires step-up MFA verification') ||
+            payload.message.includes('requires a valid step-up MFA challenge'))
+        ) {
+          setPendingMfaRequest({
+            conversationId: activeConversationId,
+            message,
+            toolName: payload.toolName ?? undefined,
+          })
+          setMfaCode('')
+          setMfaError('')
+          return
+        }
+      } catch {
+        // Render malformed or non-command responses as normal assistant content.
+      }
+
+      const assistantMessage: Message = {
+        id: createClientId(),
+        role: 'assistant',
+        content: data.response,
       }
 
       setConversations((prev) =>
@@ -239,100 +336,16 @@ export default function Page() {
           c.id === activeConversationId
             ? {
                 ...c,
-                messages: [...c.messages, userMessage],
+                messages: [...c.messages, assistantMessage],
               }
             : c
         )
       )
+    } catch (error) {
+      setCommandError(chatSubmissionErrorMessage(error))
+    } finally {
+      setIsLoading(false)
     }
-
-    setIsLoading(true)
-
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        conversationId: activeConversationId,
-        message,
-        mfaChallengeToken: options?.mfaChallengeToken,
-        connectedClientId: activeConnectedClientId ?? null,
-      }),
-    })
-
-    const data = await res.json()
-
-    setIsLoading(false)
-
-    if (!data.success) {
-      if (data.message === 'Selected connected client is unavailable.') {
-        setActiveConnectedClientId(undefined)
-        setConnectedClients((prev) => prev.filter((client) => client.id !== activeConnectedClientId))
-      }
-      const errorMessage: Message = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: data.message || 'The command could not be completed.',
-      }
-
-      setConversations((prev) =>
-        prev.map((c) =>
-          c.id === activeConversationId
-            ? { ...c, messages: [...c.messages, errorMessage] }
-            : c
-        )
-      )
-      return
-    }
-
-    setActiveConnectedClientId(data.connectedClientId ?? undefined)
-    setConversations((prev) => prev.map((conversation) => (
-      conversation.id === activeConversationId
-        ? { ...conversation, connectedClientId: data.connectedClientId ?? null }
-        : conversation
-    )))
-
-    try {
-      const payload = JSON.parse(data.response) as CommandExecutionPayload & { message?: string }
-      applyUiControl(payload.data)
-
-      if (
-        payload.status === 'FAILED' &&
-        typeof payload.message === 'string' &&
-        (payload.message.includes('requires step-up MFA verification') ||
-          payload.message.includes('requires a valid step-up MFA challenge'))
-      ) {
-        setPendingMfaRequest({
-          conversationId: activeConversationId,
-          message,
-          toolName: payload.toolName ?? undefined,
-        })
-        setMfaCode('')
-        setMfaError('')
-        return
-      }
-    } catch {
-      // Render malformed or non-command responses as normal assistant content.
-    }
-
-    const assistantMessage: Message = {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: data.response,
-    }
-
-    setConversations((prev) =>
-      prev.map((c) =>
-        c.id === activeConversationId
-          ? {
-              ...c,
-              messages: [...c.messages, assistantMessage],
-            }
-          : c
-      )
-    )
   }
 
   const handleVerifyMfa = async () => {
@@ -397,6 +410,7 @@ export default function Page() {
         onSelectConversation={handleSelectConversation}
         onNewChat={handleNewChat}
         clients={connectedClients}
+        clientsError={connectedClientsError}
         selectedClientId={activeConnectedClientId}
         onClientChange={handleConnectedClientChange}
       />
@@ -508,6 +522,11 @@ export default function Page() {
           </div>
         </div>
 
+        {commandError ? (
+          <p role="alert" className="px-4 pb-2 text-center text-sm text-destructive">
+            {commandError}
+          </p>
+        ) : null}
         <ChatInput
           onSubmit={handleSendMessage}
           isLoading={isLoading}

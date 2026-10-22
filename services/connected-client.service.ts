@@ -1,7 +1,12 @@
 import type { ConnectedClient, Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/lib/prisma";
 import { encryptSecret } from "@/lib/mfa";
-import { ConflictError, NotFoundError, ValidationFailedError } from "@/lib/errors";
+import {
+  AuthenticationServiceError,
+  ConflictError,
+  NotFoundError,
+  ValidationFailedError,
+} from "@/lib/errors";
 import {
   createConnectedClientSchema,
   updateConnectedClientSchema,
@@ -80,7 +85,15 @@ export async function createConnectedClient(rawInput: unknown, actingUser: { id:
 }
 
 export async function listConnectedClients(companyId: string, filters: { status?: "ACTIVE" | "INACTIVE" } = {}, db: PrismaLike = defaultPrisma): Promise<SafeConnectedClient[]> {
-  const clients = await db.connectedClient.findMany({ where: { companyId, ...(filters.status ? { status: filters.status } : {}) }, orderBy: { createdAt: "desc" } });
+  let clients: ConnectedClient[];
+  try {
+    clients = await db.connectedClient.findMany({
+      where: { companyId, ...(filters.status ? { status: filters.status } : {}) },
+      orderBy: { createdAt: "desc" },
+    });
+  } catch (error) {
+    throw new AuthenticationServiceError("Connected clients could not be loaded.", error);
+  }
   return clients.map(toSafeConnectedClient);
 }
 

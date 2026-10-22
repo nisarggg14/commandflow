@@ -14,6 +14,7 @@ import {
   computeApprovalHash,
 } from "../services/approval.service";
 import { createChallengeToken, verifyTotpCode, createTotpSecret, validateAndConsumeMfaChallenge, decryptSecret } from "../lib/mfa";
+import { TOTP, NobleCryptoPlugin, ScureBase32Plugin } from "otplib";
 import { ApprovalStatus } from "@prisma/client";
 import { NextRequest } from "next/server";
 import { GET as getApprovalsRoute } from "../app/api/approvals/route";
@@ -328,11 +329,12 @@ test("15. Admin with invalid TOTP cannot approve", async () => {
   assert.equal(valid, false);
 });
 
-test("16. Admin with valid TOTP can obtain valid step-up challenge", async () => {
+test("16. Admin-generated current TOTP code verifies successfully", async () => {
   const { admin } = await createUserSet();
   const secret = decryptSecret(admin.mfaSecret ?? "");
-  const code = "000000";
-  assert.equal(await verifyTotpCode(secret, code), false);
+  const totp = new TOTP({ crypto: new NobleCryptoPlugin(), base32: new ScureBase32Plugin() });
+  const code = await totp.generate({ secret });
+  assert.equal(await verifyTotpCode(secret, code), true);
 });
 
 test("17. MFA challenge is single-use", async () => {

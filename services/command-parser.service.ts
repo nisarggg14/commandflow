@@ -1,5 +1,12 @@
 import { CommandFlowMCPServer } from "@/mcp/server";
-import { generateResponse } from "./llm.service";
+import {
+  generateResponse,
+  GeminiIntentAnalysisError,
+  GeminiIntentResponseError,
+  GeminiTemporaryUnavailableError,
+  getGeminiConfigurationStatus,
+  getGeminiFailureDetails,
+} from "./llm.service";
 import type { ExecutionStageId } from "@/types/execution-trace";
 
 export interface ParsedCommand {
@@ -12,6 +19,7 @@ export interface CommandParseTraceHooks {
   onStageStart?: (stage: Extract<ExecutionStageId, "intent-analysis" | "mcp-plan-preparation">) => void;
   onStageComplete?: (stage: Extract<ExecutionStageId, "intent-analysis" | "mcp-plan-preparation">) => void;
   onStageFailed?: (stage: Extract<ExecutionStageId, "intent-analysis" | "mcp-plan-preparation">, error: string) => void;
+  onStageFallback?: (stage: "intent-analysis", note: string) => void;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -98,7 +106,8 @@ function formatSchema(schema: Record<string, unknown>): string {
 export async function parseCommand(
   message: string,
   server: CommandFlowMCPServer,
-  traceHooks?: CommandParseTraceHooks
+  traceHooks?: CommandParseTraceHooks,
+  generate: typeof generateResponse = generateResponse,
 ): Promise<ParsedCommand> {
   const tools = server.listTools();
 
@@ -143,27 +152,153 @@ ${message}
   traceHooks?.onStageStart?.("intent-analysis");
   let llmResponse;
   try {
-    llmResponse = await generateResponse(prompt);
-    traceHooks?.onStageComplete?.("intent-analysis");
+    llmResponse = await generate(prompt);
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "Intent analysis failed.";
+    if (error instanceof GeminiTemporaryUnavailableError) {
+      const fallback = deterministicFallback(message, server);
+      if (fallback) {
+        traceHooks?.onStageFallback?.(
+          "intent-analysis",
+          "Gemini unavailable; a validated read-only fallback was selected.",
+        );
+        traceHooks?.onStageComplete?.("intent-analysis");
+        traceHooks?.onStageStart?.("mcp-plan-preparation");
+        traceHooks?.onStageComplete?.("mcp-plan-preparation");
+        return fallback;
+      }
+
+      traceHooks?.onStageFailed?.("intent-analysis", error.message);
+      throw error;
+    }
+
+    const details = error instanceof GeminiIntentAnalysisError
+      ? error.details
+      : getGeminiFailureDetails(error);
+    if (!(error instanceof GeminiIntentAnalysisError)) {
+      console.error("[intent] Gemini request failed", {
+        ...getGeminiConfigurationStatus(),
+        ...details,
+      });
+    }
+    const intentError = error instanceof GeminiIntentAnalysisError
+      ? error
+      : new GeminiIntentAnalysisError(details);
+    const errorMessage = intentError.message;
     traceHooks?.onStageFailed?.("intent-analysis", errorMessage);
-    throw error;
+    throw intentError;
   }
 
   if (!llmResponse.success) {
-    traceHooks?.onStageFailed?.("intent-analysis", "Intent analysis did not return a result.");
-    return { action: "unknown" };
+    const error = new GeminiIntentResponseError("Gemini intent analysis returned no successful result.");
+    console.error("[intent] Gemini returned unsuccessful result", {
+      ...getGeminiConfigurationStatus(),
+      category: "invalid_response",
+    });
+    traceHooks?.onStageFailed?.("intent-analysis", error.message);
+    throw error;
   }
 
+  traceHooks?.onStageComplete?.("intent-analysis");
   traceHooks?.onStageStart?.("mcp-plan-preparation");
   try {
-    const parsedCommand = sanitizeCommand(llmResponse.text);
+    const parsedCommand = validateIntentResponse(llmResponse.text, server);
     traceHooks?.onStageComplete?.("mcp-plan-preparation");
     return parsedCommand;
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "MCP plan generation failed.";
+    const errorMessage = error instanceof GeminiIntentResponseError
+      ? error.message
+      : "Gemini selected an invalid or unauthorized tool request.";
+    console.warn("[intent] Gemini response rejected", {
+      ...getGeminiConfigurationStatus(),
+      category: "invalid_response",
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
     traceHooks?.onStageFailed?.("mcp-plan-preparation", errorMessage);
-    throw error;
+    throw new GeminiIntentResponseError(errorMessage);
+  }
+}
+
+function validateIntentResponse(raw: string, server: CommandFlowMCPServer): ParsedCommand {
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new GeminiIntentResponseError("Gemini returned an empty intent response.");
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new GeminiIntentResponseError("Gemini returned malformed intent JSON.");
+  }
+  if (!isPlainObject(payload)) {
+    throw new GeminiIntentResponseError("Gemini intent response must be a JSON object.");
+  }
+
+  if (payload.action === "unknown" && Object.keys(payload).length === 1) {
+    return { action: "unknown" };
+  }
+  if (typeof payload.tool !== "string" || !payload.tool.trim()) {
+    throw new GeminiIntentResponseError("Gemini intent response did not identify a valid tool.");
+  }
+
+  const hasArguments = Object.prototype.hasOwnProperty.call(payload, "arguments");
+  const hasParameters = Object.prototype.hasOwnProperty.call(payload, "parameters");
+  if (hasArguments === hasParameters || Object.keys(payload).length !== 2) {
+    throw new GeminiIntentResponseError("Gemini intent response has an invalid shape.");
+  }
+
+  const args = hasArguments ? payload.arguments : payload.parameters;
+  if (!isPlainObject(args)) {
+    throw new GeminiIntentResponseError("Gemini tool arguments must be a JSON object.");
+  }
+
+  if (!server.listTools().some((tool) => tool.name === payload.tool)) {
+    throw new GeminiIntentResponseError("Gemini selected a tool that is unavailable to this account.");
+  }
+
+  let validatedArguments: unknown;
+  try {
+    validatedArguments = server.validateToolInput(payload.tool, args);
+  } catch {
+    throw new GeminiIntentResponseError("Gemini selected an invalid or unauthorized tool request.");
+  }
+  if (!isPlainObject(validatedArguments)) {
+    throw new GeminiIntentResponseError("Gemini tool arguments failed validation.");
+  }
+  return { tool: payload.tool, arguments: validatedArguments };
+}
+
+const DETERMINISTIC_READ_COMMANDS: ReadonlyArray<{
+  phrases: readonly string[];
+  tool: string;
+  arguments: Record<string, unknown>;
+}> = [
+  {
+    phrases: ["show products", "list products"],
+    tool: "products.getProducts",
+    arguments: {},
+  },
+  {
+    phrases: ["show inventory summary", "inventory summary"],
+    tool: "analytics.inventorySummary",
+    arguments: {},
+  },
+];
+
+function deterministicFallback(message: string, server: CommandFlowMCPServer): ParsedCommand | undefined {
+  const normalized = message
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?]+$/, "")
+    .replace(/\s+/g, " ");
+  const match = DETERMINISTIC_READ_COMMANDS.find((candidate) => candidate.phrases.includes(normalized));
+  if (!match || !server.listTools().some((tool) => tool.name === match.tool)) return undefined;
+
+  try {
+    const argumentsObject = { ...match.arguments };
+    server.validateToolInput(match.tool, argumentsObject);
+    return { tool: match.tool, arguments: argumentsObject };
+  } catch {
+    return undefined;
   }
 }

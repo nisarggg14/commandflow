@@ -6,7 +6,6 @@ import { Permission } from "@/mcp/types";
 import { resolveProductReference } from "./product-resolver.service";
 import { getConnectedClientToolNames, validateConnectedClientSelection } from "./mcp-connector.service";
 import { runWithExternalRequestTrace } from "./external-request-trace";
-import { GeminiQuotaError } from "./llm.service";
 import { EXECUTION_STAGE_DEFINITIONS, type ExecutionStage, type ExecutionStageId, type ExternalRequestTraceHooks } from "@/types/execution-trace";
 import type { ToolExecutionTraceHooks } from "@/mcp/types";
 import { getExecutionStatus } from "@/lib/execution-status";
@@ -147,16 +146,21 @@ export async function processChat(data: ChatRequest) {
       onStageStart: (stage) => trace.start(stage),
       onStageComplete: (stage) => trace.complete(stage),
       onStageFailed: (stage, error) => trace.fail(stage, error),
+      onStageFallback: (stage, note) => trace.note(stage, note),
     });
   } catch (error) {
-    if (error instanceof GeminiQuotaError) throw error;
-    const errorMessage = "Command could not be analyzed. Please try again.";
-    if (!trace.snapshot().some((stage) => stage.status === "failed")) trace.fail("intent-analysis", errorMessage);
+    const errorMessage = error instanceof Error
+      ? error.message
+      : "Command intent analysis failed. Please try again.";
+    if (!trace.snapshot().some((stage) => stage.status === "failed")) {
+      trace.fail("intent-analysis", errorMessage);
+    }
+    trace.skipAfterFailure();
     responsePayload = buildExecutionPayload({
       success: false,
       tool: null,
-      message: errorMessage,
-      error: { name: error instanceof Error ? error.name : "CommandError", message: errorMessage },
+      message: error instanceof Error ? error.message : "Command intent analysis failed. Please try again.",
+      error: { name: error instanceof Error ? error.name : "CommandError", message: error instanceof Error ? error.message : "Command intent analysis failed. Please try again." },
     }, startedAt, server.metrics(), trace.snapshot());
   }
 
@@ -238,6 +242,8 @@ class ExecutionTrace {
   start(id: ExecutionStageId) { const stage = this.stages.find((item) => item.id === id); if (!stage || stage.status === "completed" || stage.status === "failed") return; stage.status = "running"; this.startedAt.set(id, Date.now()); }
   complete(id: ExecutionStageId) { const stage = this.stages.find((item) => item.id === id); if (!stage || stage.status === "completed" || stage.status === "failed") return; stage.status = "completed"; stage.durationMs = this.duration(id); }
   fail(id: ExecutionStageId, error: string) { const stage = this.stages.find((item) => item.id === id); if (!stage || stage.status === "completed" || stage.status === "failed") return; stage.status = "failed"; stage.durationMs = this.duration(id); stage.error = error; }
+  note(id: ExecutionStageId, note: string) { const stage = this.stages.find((item) => item.id === id); if (stage) stage.note = note; }
+  skipAfterFailure() { const failedIndex = this.stages.findIndex((stage) => stage.status === "failed"); if (failedIndex < 0) return; for (const stage of this.stages.slice(failedIndex + 1)) if (stage.status === "pending") stage.status = "skipped"; }
   externalRequestStart() { const stage = this.stages.find((item) => item.id === "client-api-request"); if (!stage || stage.status === "failed") return; stage.status = "running"; this.externalRequestStartedAt.push(Date.now()); }
   externalRequestComplete() { const startedAt = this.externalRequestStartedAt.pop(); if (startedAt !== undefined) this.externalRequestDuration += Date.now() - startedAt; const stage = this.stages.find((item) => item.id === "client-api-request"); if (stage && this.externalRequestStartedAt.length === 0) { stage.status = "completed"; stage.durationMs = this.externalRequestDuration; } }
   externalRequestFailed(_error: string) { const startedAt = this.externalRequestStartedAt.pop(); if (startedAt !== undefined) this.externalRequestDuration += Date.now() - startedAt; const stage = this.stages.find((item) => item.id === "client-api-request"); if (stage) { stage.status = "failed"; stage.durationMs = this.externalRequestDuration; stage.error = "Connected client request failed."; } }

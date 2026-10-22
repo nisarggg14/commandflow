@@ -1,12 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { UserRole } from "@prisma/client";
+import { requireRole } from "../lib/authorization";
 import {
   connectedClientBaseUrlSchema,
   connectedClientSlugSchema,
   createConnectedClientSchema,
   updateConnectedClientSchema,
 } from "../validators/connected-client.validator";
-import { toSafeConnectedClient, updateConnectedClient } from "../services/connected-client.service";
+import {
+  listConnectedClients,
+  toSafeConnectedClient,
+  updateConnectedClient,
+} from "../services/connected-client.service";
+import { validateConnectedClientSelection } from "../services/mcp-connector.service";
+import { connectedClientErrorResponse } from "../lib/connected-client-api-error";
+import { AuthenticationServiceError } from "../lib/errors";
 import { validateAndConsumeMfaChallenge } from "../lib/mfa";
 
 process.env.MFA_ENCRYPTION_KEY ??= "test-connected-client-encryption-key-32-bytes";
@@ -42,6 +51,156 @@ test("connected-client validator enforces slug and authConfig rules", () => {
   assert.equal(createConnectedClientSchema.safeParse({ ...valid, authConfig: undefined }).success, false);
   assert.equal(createConnectedClientSchema.safeParse({ name: "Public API", baseUrl: valid.baseUrl, authType: "NONE" }).success, true);
   assert.equal(updateConnectedClientSchema.safeParse({ authType: "BEARER" }).success, false);
+});
+
+test("connected-client registration roles remain restricted to admins and managers", () => {
+  const actor = {
+    id: "user-1",
+    email: "admin@example.test",
+    companyId: "company-1",
+    role: UserRole.VIEWER,
+  };
+
+  assert.throws(
+    () => requireRole(actor, [UserRole.ADMIN, UserRole.MANAGER]),
+    /forbidden/i,
+  );
+  assert.doesNotThrow(() => requireRole(
+    { ...actor, role: UserRole.MANAGER },
+    [UserRole.ADMIN, UserRole.MANAGER],
+  ));
+});
+
+test("active connected-client listing filters by company and status", async () => {
+  const activeClient = {
+    id: "client-active",
+    name: "Inventory API",
+    slug: "inventory-api",
+    description: null,
+    status: "ACTIVE",
+    baseUrl: "https://inventory.example.com/api",
+    authType: "BEARER",
+    authConfig: "encrypted",
+    companyId: "company-1",
+    createdAt: new Date("2026-01-01"),
+    updatedAt: new Date("2026-01-01"),
+  };
+  let query: { where: Record<string, string> } | undefined;
+  const db = {
+    connectedClient: {
+      findMany: async ({ where }: { where: Record<string, string> }) => {
+        query = { where };
+        return [activeClient];
+      },
+    },
+  };
+
+  const clients = await listConnectedClients(
+    "company-1",
+    { status: "ACTIVE" },
+    db as never,
+  );
+
+  assert.deepEqual(query?.where, { companyId: "company-1", status: "ACTIVE" });
+  assert.deepEqual(clients.map(({ id, status }) => ({ id, status })), [
+    { id: "client-active", status: "ACTIVE" },
+  ]);
+});
+
+test("connected-client listing returns an empty list when the company has no registrations", async () => {
+  let query: { where: Record<string, string> } | undefined;
+  const db = {
+    connectedClient: {
+      findMany: async ({ where }: { where: Record<string, string> }) => {
+        query = { where };
+        return [];
+      },
+    },
+  };
+
+  const clients = await listConnectedClients(
+    "company-with-no-clients",
+    { status: "ACTIVE" },
+    db as never,
+  );
+
+  assert.deepEqual(clients, []);
+  assert.deepEqual(query?.where, {
+    companyId: "company-with-no-clients",
+    status: "ACTIVE",
+  });
+});
+
+test("inactive clients are excluded from the active list and cannot be selected", async () => {
+  const inactiveClient = {
+    id: "client-inactive",
+    status: "INACTIVE",
+  };
+  let listWhere: Record<string, string> | undefined;
+  let selectionWhere: Record<string, string> | undefined;
+  const db = {
+    connectedClient: {
+      findMany: async ({ where }: { where: Record<string, string> }) => {
+        listWhere = where;
+        return [];
+      },
+      findFirst: async ({ where }: { where: Record<string, string> }) => {
+        selectionWhere = where;
+        return where.status === "ACTIVE" ? null : inactiveClient;
+      },
+    },
+  };
+
+  const clients = await listConnectedClients(
+    "company-1",
+    { status: "ACTIVE" },
+    db as never,
+  );
+
+  assert.deepEqual(clients, []);
+  assert.deepEqual(listWhere, { companyId: "company-1", status: "ACTIVE" });
+  await assert.rejects(
+    () => validateConnectedClientSelection("client-inactive", "company-1", db as never),
+    /unavailable/i,
+  );
+  assert.deepEqual(selectionWhere, {
+    id: "client-inactive",
+    companyId: "company-1",
+    status: "ACTIVE",
+  });
+});
+
+test("connected-client database errors become safe service-unavailable responses", async () => {
+  const databaseError = new Error("remote database connection details");
+  const db = {
+    connectedClient: {
+      findMany: async () => {
+        throw databaseError;
+      },
+    },
+  };
+
+  await assert.rejects(
+    () => listConnectedClients("company-1", { status: "ACTIVE" }, db as never),
+    (error: unknown) =>
+      error instanceof AuthenticationServiceError &&
+      error.cause === databaseError,
+  );
+
+  const originalConsoleError = console.error;
+  console.error = () => undefined;
+  try {
+    const response = connectedClientErrorResponse(
+      new AuthenticationServiceError("Connected clients unavailable.", databaseError),
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 503);
+    assert.equal(body.success, false);
+    assert.equal(body.message.includes("remote database"), false);
+  } finally {
+    console.error = originalConsoleError;
+  }
 });
 
 test("safe connected-client responses never expose encrypted authConfig", () => {

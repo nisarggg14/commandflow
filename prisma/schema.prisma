@@ -74,6 +74,9 @@ model User {
 
   mfaEnabled Boolean @default(false)
   mfaSecret  String?
+  pendingMfaSecret String?
+  pendingMfaExpiresAt DateTime?
+  lastMfaTotpStep BigInt?
 
   companyId String
   company   Company @relation(fields: [companyId], references: [id])
@@ -82,6 +85,8 @@ model User {
   conversations Conversation[]
   activityLogs  ActivityLog[]
   mfaChallenges MfaChallenge[]
+  mfaLoginChallenges MfaLoginChallenge[]
+  mfaRecoveryCodes MfaRecoveryCode[]
   approvalsRequested Approval[] @relation("ApprovalRequester")
   approvalsReviewed  Approval[] @relation("ApprovalApprover")
   automationsOwned Automation[]
@@ -254,6 +259,29 @@ model MfaChallenge {
   expiresAt     DateTime
   verifiedAt    DateTime?
   createdAt     DateTime @default(now())
+}
+
+model MfaLoginChallenge {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  challengeHash String   @unique
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+model MfaRecoveryCode {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash    String    @unique
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, consumedAt])
 }
 
 model Approval {

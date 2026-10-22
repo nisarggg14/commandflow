@@ -1,4 +1,4 @@
-export type ExecutionStageStatus = "pending" | "running" | "completed" | "failed";
+export type ExecutionStageStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 
 export type ExecutionStageId =
   | "intent-analysis"
@@ -14,6 +14,7 @@ export interface ExecutionStage {
   status: ExecutionStageStatus;
   durationMs?: number;
   error?: string;
+  note?: string;
 }
 
 export interface ExternalRequestTraceHooks {

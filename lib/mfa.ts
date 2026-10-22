@@ -21,6 +21,15 @@ export interface ConsumeMfaChallengeInput {
 }
 
 export const GENERIC_STEP_UP_MFA_PURPOSE = "step-up-mfa";
+export const MFA_ENROLLMENT_TTL_MS = 10 * 60 * 1000;
+
+export function isMfaEnrollmentActive(
+  encryptedSecret: string | null,
+  expiresAt: Date | null,
+  now = new Date(),
+): boolean {
+  return Boolean(encryptedSecret && expiresAt && expiresAt > now);
+}
 
 function getEncryptionKey(): string {
   const key = process.env.MFA_ENCRYPTION_KEY;
@@ -86,10 +95,15 @@ export async function createTotpSetupResult(email: string): Promise<TotpSetupRes
 }
 
 export async function verifyTotpCode(secret: string, code: string): Promise<boolean> {
-  if (!secret || !code) {
-    return false;
-  }
+  return (await verifyTotpCodeWithTimeStep(secret, code)) !== null;
+}
 
+export async function verifyTotpCodeWithTimeStep(
+  secret: string,
+  code: string,
+  epoch = Math.floor(Date.now() / 1000),
+): Promise<number | null> {
+  if (!secret || !/^\d{6}$/.test(code)) return null;
   // epochTolerance: 30 allows one full TOTP period (30 seconds) of clock skew in either
   // direction, which is the standard recommendation for TOTP implementations per RFC 6238.
   // The previous value of 1 second was too tight and would reject valid codes from
@@ -97,9 +111,57 @@ export async function verifyTotpCode(secret: string, code: string): Promise<bool
   const result = await totpFactory.verify(code, {
     secret,
     epochTolerance: 30,
+    epoch,
   });
 
-  return result.valid;
+  return result.valid ? result.timeStep : null;
+}
+
+export function createRecoveryCodes(count = 10): string[] {
+  return Array.from({ length: count }, () => {
+    const raw = crypto.randomBytes(16).toString("hex").toUpperCase();
+    return `CF-${raw.match(/.{1,4}/g)?.join("-") ?? raw}`;
+  });
+}
+
+export function hashRecoveryCode(code: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(`commandflow-mfa-recovery:${code.replace(/[\s-]/g, "").toUpperCase()}`)
+    .digest("hex");
+}
+
+export async function consumeTotpStep(
+  db: Pick<PrismaClient, "user">,
+  userId: string,
+  timeStep: number,
+): Promise<boolean> {
+  if (!Number.isSafeInteger(timeStep) || timeStep < 0) return false;
+  const result = await db.user.updateMany({
+    where: {
+      id: userId,
+      mfaEnabled: true,
+      OR: [
+        { lastMfaTotpStep: null },
+        { lastMfaTotpStep: { lt: BigInt(timeStep) } },
+      ],
+    },
+    data: { lastMfaTotpStep: BigInt(timeStep) },
+  });
+  return result.count === 1;
+}
+
+export async function consumeRecoveryCode(
+  db: Pick<PrismaClient, "mfaRecoveryCode">,
+  userId: string,
+  code: string,
+): Promise<boolean> {
+  if (!code.trim()) return false;
+  const result = await db.mfaRecoveryCode.updateMany({
+    where: { userId, codeHash: hashRecoveryCode(code), consumedAt: null },
+    data: { consumedAt: new Date() },
+  });
+  return result.count === 1;
 }
 
 

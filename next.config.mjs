@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  allowedDevOrigins: ["192.168.56.1"],
   experimental: {
     workerThreads: true,
   },
@@ -19,7 +20,7 @@ const nextConfig = {
 
       { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
 
-      { key: "Content-Security-Policy", value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://va.vercel-scripts.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://va.vercel-scripts.com https://vitals.vercel-insights.com; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'" },
+      { key: "Content-Security-Policy", value: `default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://va.vercel-scripts.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self'${process.env.NODE_ENV === "development" ? " ws: wss:" : ""} https://va.vercel-scripts.com https://vitals.vercel-insights.com; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'` },
 
     ];
 

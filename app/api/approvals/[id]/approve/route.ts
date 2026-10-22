@@ -5,7 +5,7 @@ import { enforceRateLimit } from "@/lib/rate-limit";
 import { authenticate } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { approveApproval } from "@/services/approval.service";
-import { verifyTotpCode, decryptSecret, createChallengeToken } from "@/lib/mfa";
+import { consumeTotpStep, verifyTotpCodeWithTimeStep, decryptSecret, createChallengeToken } from "@/lib/mfa";
 import { safeApiErrorResponse } from "@/lib/api-error-response";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -36,8 +36,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ success: false, message: "A valid MFA code is required to approve a request." }, { status: 400 });
     }
 
-    if (!(await verifyTotpCode(decryptSecret(approver.mfaSecret), code))) {
+    const timeStep = await verifyTotpCodeWithTimeStep(decryptSecret(approver.mfaSecret), code);
+    if (timeStep === null) {
       return NextResponse.json({ success: false, message: "Invalid approver MFA code." }, { status: 401 });
+    }
+    if (!(await consumeTotpStep(prisma, authUser.id, timeStep))) {
+      return NextResponse.json({ success: false, message: "Approver MFA code has already been used." }, { status: 401 });
     }
 
     const challengeToken = createChallengeToken();

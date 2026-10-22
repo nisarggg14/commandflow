@@ -2,6 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createLoginSuccessResponse, getLoginErrorResponse, redactLoginDiagnostic } from "../app/api/auth/login/route";
 import { AuthenticationServiceError, UnauthorizedError } from "../lib/errors";
+import { ZodError } from "zod";
+
+test("invalid login payloads return a safe bad-request response", () => {
+  const result = getLoginErrorResponse(new ZodError([]));
+
+  assert.deepEqual(result, {
+    status: 400,
+    message: "Invalid login request.",
+    log: false,
+  });
+});
 
 test("invalid credentials return a generic unauthorized response", () => {
   const result = getLoginErrorResponse(new UnauthorizedError("Invalid email or password."));
@@ -57,4 +68,8 @@ test("successful login response omits the JWT while setting the httpOnly cookie"
   assert.equal(body.token, undefined);
   assert.match(cookie, /token=test-token-only/);
   assert.match(cookie, /HttpOnly/i);
+  assert.match(cookie, /SameSite=Lax/i);
+  assert.match(cookie, /Path=\//i);
+  assert.match(cookie, /Max-Age=604800/i);
+  assert.equal(/;\s*Secure(?:;|$)/i.test(cookie), process.env.NODE_ENV === "production");
 });

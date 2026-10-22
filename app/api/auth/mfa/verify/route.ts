@@ -4,7 +4,7 @@ import { enforceRateLimit, requestAddress } from "@/lib/rate-limit";
 import { authenticate } from "@/lib/auth";
 import { UnauthorizedError } from "@/lib/errors";
 import { prisma } from "@/lib/prisma";
-import { verifyTotpCode, createChallengeToken, decryptSecret, GENERIC_STEP_UP_MFA_PURPOSE } from "@/lib/mfa";
+import { verifyTotpCodeWithTimeStep, consumeTotpStep, createChallengeToken, decryptSecret, GENERIC_STEP_UP_MFA_PURPOSE } from "@/lib/mfa";
 
 // Security: purpose and riskLevel are server-assigned and must NOT be accepted from the
 // client. The client supplies only the TOTP code. Accepting a client-supplied purpose
@@ -37,8 +37,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, message: "MFA is not enabled for this account." }, { status: 403 });
     }
 
-    if (!(await verifyTotpCode(decryptSecret(user.mfaSecret), code))) {
+    const timeStep = await verifyTotpCodeWithTimeStep(decryptSecret(user.mfaSecret), code);
+    if (timeStep === null) {
       return NextResponse.json({ success: false, message: "Invalid MFA code." }, { status: 401 });
+    }
+    if (!(await consumeTotpStep(prisma, authUser.id, timeStep))) {
+      return NextResponse.json({ success: false, message: "MFA code has already been used." }, { status: 401 });
     }
 
     // Generate a challenge token if the client did not supply one.

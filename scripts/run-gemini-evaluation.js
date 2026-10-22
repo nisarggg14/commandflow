@@ -12,7 +12,7 @@ const { classifyRawOutput } = require("./evaluate-commandflow-dataset.js");
 
 const root = path.resolve(__dirname, "..");
 const defaultDatasetPath = path.join(root, "evaluation", "commandflow-eval-dataset.json");
-const defaultModel = "gemini-3.6-flash";
+const defaultModel = "gemini-2.5-flash";
 const defaultOutputRoot = path.join(root, "evaluation-results");
 
 function usage() {

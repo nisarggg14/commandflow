@@ -1,7 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getExternalRequestTrace } from "@/services/external-request-trace";
 
-import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import {
+  assertSafeOutboundUrl,
+  isConfiguredDevelopmentLoopbackUrl,
+} from "@/lib/ssrf";
 
 type InventoryRole = "admin" | "manager" | "viewer";
 
@@ -71,8 +74,26 @@ export interface InventoryLowStockReport {
 
 const INVENTORY_BASE_URL = (process.env.INVENTORY_API_BASE_URL ?? "http://localhost:5000").replace(/\/+$/, "");
 const INVENTORY_AUTH_TIMEOUT_MS = 10_000;
+const INVENTORY_REQUEST_TIMEOUT_MS = 10_000;
 
 const inventoryConnectionStorage = new AsyncLocalStorage<InventoryApiConnection>();
+
+async function assertInventoryUrl(
+  raw: string,
+  allowConfiguredDevelopmentLoopback: boolean,
+): Promise<URL> {
+  if (
+    allowConfiguredDevelopmentLoopback &&
+    isConfiguredDevelopmentLoopbackUrl(
+      raw,
+      INVENTORY_BASE_URL,
+      process.env.NODE_ENV,
+    )
+  ) {
+    return new URL(raw);
+  }
+  return assertSafeOutboundUrl(raw);
+}
 
 export function runWithInventoryApiConnection<T>(
   connection: InventoryApiConnection,
@@ -108,7 +129,10 @@ async function getInventoryToken(): Promise<string> {
     return inventoryToken;
   }
 
-  const loginUrl = await assertSafeOutboundUrl(new URL("/auth/login", `${INVENTORY_BASE_URL}/`).toString());
+  const loginUrl = await assertInventoryUrl(
+    new URL("/auth/login", `${INVENTORY_BASE_URL}/`).toString(),
+    true,
+  );
   let response: Response;
   try {
     response = await fetch(loginUrl, {
@@ -211,7 +235,10 @@ async function inventoryRequest<T>(
   validateInventoryPath(path);
   const connection = inventoryConnectionStorage.getStore();
   const baseUrl = connection?.baseUrl ?? INVENTORY_BASE_URL;
-  const requestUrl = await assertSafeOutboundUrl(new URL(path.replace(/^\/+/, ""), `${baseUrl.replace(/\/+$/, "")}/`).toString());
+  const requestUrl = await assertInventoryUrl(
+    new URL(path.replace(/^\/+/, ""), `${baseUrl.replace(/\/+$/, "")}/`).toString(),
+    !connection,
+  );
   if (requestUrl.protocol !== "http:" && requestUrl.protocol !== "https:") {
     throw new Error("Inventory base URL must use HTTP or HTTPS.");
   }
@@ -225,16 +252,18 @@ async function inventoryRequest<T>(
   const maxAttempts = connection ? 1 : (requireAuth ? 2 : 1);
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (connection && requireAuth) {
+    if (connection) {
       applyConnectedClientAuth(headers, connection);
     } else if (requireAuth) {
       const token = await getInventoryToken();
       headers.set("Authorization", `Bearer ${token}`);
     }
 
-    const signal = connection ? AbortSignal.timeout(connection.timeoutMs ?? 10_000) : options.signal;
+    const signal = connection
+      ? AbortSignal.timeout(connection.timeoutMs ?? INVENTORY_REQUEST_TIMEOUT_MS)
+      : options.signal ?? AbortSignal.timeout(INVENTORY_REQUEST_TIMEOUT_MS);
     let response: Response;
-    const requestTrace = connection ? getExternalRequestTrace() : undefined;
+    const requestTrace = getExternalRequestTrace();
     requestTrace?.onRequestStart();
     try {
       response = await fetch(requestUrl.toString(), { ...options, headers, signal, redirect: "manual" });
@@ -281,7 +310,7 @@ async function inventoryRequest<T>(
 }
 
 export async function getProducts(): Promise<InventoryProduct[]> {
-  return inventoryRequest<InventoryProduct[]>("/products", { method: "GET" }, true);
+  return inventoryRequest<InventoryProduct[]>("/products", { method: "GET" });
 }
 
 export async function getProduct(productId: string): Promise<InventoryProduct> {
@@ -289,7 +318,7 @@ export async function getProduct(productId: string): Promise<InventoryProduct> {
     throw new Error("Product ID is required.");
   }
 
-  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}`, { method: "GET" }, true);
+  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}`, { method: "GET" });
 }
 
 export async function getInventorySummary(category?: string): Promise<InventorySummaryResponse> {
@@ -334,7 +363,7 @@ export async function getLowStockReport(threshold = 10, category?: string): Prom
     params.set("category", category.trim());
   }
 
-  return inventoryRequest<InventoryLowStockReport>(`/products/low-stock?${params.toString()}`, { method: "GET" }, true);
+  return inventoryRequest<InventoryLowStockReport>(`/products/low-stock?${params.toString()}`);
 }
 
 export async function createProduct(payload: {

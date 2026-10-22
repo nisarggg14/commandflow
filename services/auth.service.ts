@@ -1,16 +1,38 @@
+import type { PrismaClient, User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { hashPassword, comparePassword } from "@/lib/bcrypt";
 import { generateToken, hashSessionToken, verifyToken } from "@/lib/jwt";
 import { registerSchema, loginSchema } from "@/validators/auth.validator";
 import { UserRole } from "@prisma/client";
 import { AuthenticationServiceError, UnauthorizedError } from "@/lib/errors";
+import {
+  consumeRecoveryCode,
+  consumeTotpStep,
+  createChallengeToken,
+  decryptSecret,
+  verifyTotpCodeWithTimeStep,
+} from "@/lib/mfa";
+
+const LOGIN_MFA_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const AUTHENTICATED_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type LoginResult =
+  | { success: true; mfaRequired: true; challengeToken: string; expiresAt: string }
+  | { success: true; mfaRequired: false; message: string; token: string; user: Record<string, unknown> };
 
 export function resolvePublicRegistrationRole(): UserRole {
   return UserRole.ADMIN;
 }
 
 function sanitizeUser(user: { [key: string]: unknown }) {
-  const { password, mfaSecret, ...rest } = user;
+  const {
+    password,
+    mfaSecret,
+    pendingMfaSecret,
+    pendingMfaExpiresAt,
+    lastMfaTotpStep,
+    ...rest
+  } = user;
   return rest;
 }
 
@@ -76,12 +98,15 @@ export async function registerUser(data: unknown) {
   };
 }
 
-export async function loginUser(data: unknown) {
+export async function loginUser(
+  data: unknown,
+  db: PrismaClient = prisma,
+): Promise<LoginResult> {
   const validatedData = loginSchema.parse(data);
 
   let user;
   try {
-    user = await prisma.user.findUnique({
+    user = await db.user.findUnique({
       where: {
         email: validatedData.email,
       },
@@ -104,20 +129,140 @@ export async function loginUser(data: unknown) {
     throw new UnauthorizedError("Invalid email or password.");
   }
 
+  if (user.mfaEnabled) {
+    if (!user.mfaSecret) {
+      throw new AuthenticationServiceError("MFA configuration is incomplete.");
+    }
+    const challengeToken = createChallengeToken();
+    const expiresAt = new Date(Date.now() + LOGIN_MFA_CHALLENGE_TTL_MS);
+    try {
+      await db.mfaLoginChallenge.create({
+        data: {
+          userId: user.id,
+          challengeHash: hashSessionToken(challengeToken),
+          expiresAt,
+        },
+      });
+    } catch (error) {
+      throw new AuthenticationServiceError("MFA login challenge unavailable.", error);
+    }
+    return {
+      success: true,
+      mfaRequired: true,
+      challengeToken,
+      expiresAt: expiresAt.toISOString(),
+    };
+  }
+
+  return createAuthenticatedLogin(user, db);
+}
+
+async function createAuthenticatedLogin(
+  user: User,
+  db: PrismaClient = prisma,
+): Promise<LoginResult & { mfaRequired: false }> {
+  const token = generateToken({
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    companyId: user.companyId,
+  });
+
+  try {
+    await db.session.create({ data: { token: hashSessionToken(token), userId: user.id, expiresAt: new Date(Date.now() + AUTHENTICATED_SESSION_TTL_MS) } });
+  } catch (error) {
+    throw new AuthenticationServiceError("Authentication session store unavailable.", error);
+  }
+  return {
+    success: true,
+    mfaRequired: false,
+    message: "Login successful",
+    token,
+    user: sanitizeUser(user),
+  };
+}
+
+export async function verifyMfaLogin(
+  input: { challengeToken: string; code?: string; recoveryCode?: string },
+  db: PrismaClient = prisma,
+): Promise<Extract<LoginResult, { mfaRequired: false }>> {
+  const challengeHash = hashSessionToken(input.challengeToken);
+  let challenge;
+  try {
+    challenge = await db.mfaLoginChallenge.findUnique({
+      where: { challengeHash },
+      include: { user: { include: { company: true } } },
+    });
+  } catch (error) {
+    throw new AuthenticationServiceError("MFA login service unavailable.", error);
+  }
+  const now = new Date();
+  const user = challenge?.user;
+  if (
+    !challenge ||
+    challenge.consumedAt ||
+    challenge.expiresAt <= now ||
+    !user ||
+    !user.active ||
+    !user.mfaEnabled ||
+    !user.mfaSecret ||
+    !user.company ||
+    user.company.id !== user.companyId
+  ) {
+    throw new UnauthorizedError("Invalid or expired MFA login challenge.");
+  }
+
+  let acceptedTimeStep: number | null = null;
+  const useRecoveryCode = Boolean(input.recoveryCode);
+  if (!useRecoveryCode && input.code) {
+    acceptedTimeStep = await verifyTotpCodeWithTimeStep(
+      decryptSecret(user.mfaSecret),
+      input.code,
+    );
+    if (acceptedTimeStep === null) {
+      throw new UnauthorizedError("Invalid MFA verification code.");
+    }
+  } else if (!useRecoveryCode) {
+    throw new UnauthorizedError("A valid MFA code is required.");
+  }
+
   const token = generateToken({
     id: user.id,
     email: user.email,
     role: user.role,
     companyId: user.company.id,
   });
-
   try {
-    await prisma.session.create({ data: { token: hashSessionToken(token), userId: user.id, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) } });
+    await db.$transaction(async (tx) => {
+      const consumedChallenge = await tx.mfaLoginChallenge.updateMany({
+        where: { id: challenge.id, consumedAt: null, expiresAt: { gt: now } },
+        data: { consumedAt: now },
+      });
+      if (consumedChallenge.count !== 1) {
+        throw new UnauthorizedError("Invalid or expired MFA login challenge.");
+      }
+      if (acceptedTimeStep !== null && !(await consumeTotpStep(tx, user.id, acceptedTimeStep))) {
+        throw new UnauthorizedError("MFA verification code has already been used.");
+      }
+      if (useRecoveryCode && !(await consumeRecoveryCode(tx, user.id, input.recoveryCode!))) {
+        throw new UnauthorizedError("Invalid MFA verification code.");
+      }
+      await tx.session.create({
+        data: {
+          token: hashSessionToken(token),
+          userId: user.id,
+          expiresAt: new Date(now.getTime() + AUTHENTICATED_SESSION_TTL_MS),
+        },
+      });
+    });
   } catch (error) {
-    throw new AuthenticationServiceError("Authentication session store unavailable.", error);
+    if (error instanceof UnauthorizedError) throw error;
+    throw new AuthenticationServiceError("MFA login session unavailable.", error);
   }
+
   return {
     success: true,
+    mfaRequired: false,
     message: "Login successful",
     token,
     user: sanitizeUser(user),
