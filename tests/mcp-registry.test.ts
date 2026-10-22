@@ -14,6 +14,15 @@ test("unknown client tool names are rejected", () => {
   assert.throws(() => normalizeEnabledToolNames(["products.getProducts", "arbitrary.execute"]), /unsupported MCP tool/i);
 });
 
+test("products.getProducts is allowlisted and validates its optional pagination schema", () => {
+  const [tool] = createToolsForClient(["products.getProducts"]);
+  assert.equal(tool?.name, "products.getProducts");
+  assert.equal(tool?.inputSchema.safeParse({}).success, true);
+  assert.equal(tool?.inputSchema.safeParse({ limit: 100, offset: 0 }).success, true);
+  assert.equal(tool?.inputSchema.safeParse({ limit: 101 }).success, false);
+  assert.equal(tool?.inputSchema.safeParse({ offset: -1 }).success, false);
+});
+
 test("frontend schemas remain allowlisted and branding is high risk", () => {
   const tools = createToolsForClient([
     "frontend.updateBackground",

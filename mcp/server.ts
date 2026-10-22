@@ -21,6 +21,17 @@ import {
 import { InMemoryToolRegistry } from "./registry";
 import { redactAuditText } from "@/lib/audit-redaction";
 import { withAuthenticatedConnectedClient } from "@/services/mcp-connector.service";
+import { logServerError } from "@/lib/server-error-logging";
+
+function collectSensitiveInputStrings(value: unknown, depth = 0): string[] {
+  if (depth > 6 || value === null || value === undefined) return [];
+  if (typeof value === "string") return value ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap((item) => collectSensitiveInputStrings(item, depth + 1));
+  if (typeof value !== "object") return [];
+
+  return Object.values(value as Record<string, unknown>)
+    .flatMap((item) => collectSensitiveInputStrings(item, depth + 1));
+}
 
 interface RuntimeMetrics {
   totalExecutions: number;
@@ -203,6 +214,18 @@ export class CommandFlowMCPServer {
     } catch (error) {
       const duration = Date.now() - startedAt;
       const internalMessage = error instanceof Error ? error.message : "Unknown error";
+      console.error("[mcp.tool-execution] failure context", {
+        requestId: this.context.requestId,
+        toolName: name,
+        connectedClientId: this.context.connectedClientId ?? null,
+        durationMs: duration,
+      });
+      logServerError(
+        "mcp.tool-execution",
+        error,
+        collectSensitiveInputStrings(input),
+        this.context.requestId,
+      );
       const message = approvalRequired
         ? internalMessage
         : error instanceof PermissionDeniedError || error instanceof ValidationError || error instanceof ToolNotFoundError

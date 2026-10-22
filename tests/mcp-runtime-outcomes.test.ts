@@ -248,3 +248,26 @@ test("mocked external operation errors remain failed and do not expose infrastru
   assert.equal(auditEntries.at(-1)?.status, "FAILED");
   assert.equal(getDispatchCount(), 1);
 });
+
+test("tool execution diagnostics include correlated error stack and redact connection strings", async () => {
+  const originalConsoleError = console.error;
+  const logs: unknown[][] = [];
+  console.error = (...args: unknown[]) => logs.push(args);
+
+  try {
+    const { server } = createServer(Permission.ADMIN, { executionFailure: true });
+    const result = await server.executeTool("test.lowRisk", { value: "sensitive argument" });
+
+    assert.equal(result.success, false);
+    const output = JSON.stringify(logs);
+    assert.match(output, /request-1/);
+    assert.match(output, /test\.lowRisk/);
+    assert.match(output, /errorName/);
+    assert.match(output, /errorStack/);
+    assert.match(output, /DATABASE_URL=\s*\[redacted\]/);
+    assert.equal(output.includes("private.example"), false);
+    assert.equal(output.includes("sensitive argument"), false);
+  } finally {
+    console.error = originalConsoleError;
+  }
+});

@@ -9,12 +9,14 @@ export function createCommandServer(
   role: Permission | string,
   mfaChallengeToken?: string,
   connectedClientId?: string,
-  enabledToolNames?: string[]
+  enabledToolNames?: string[],
+  requestId?: string,
 ) {
   const context = createMcpContext({
     userId,
     companyId,
     role,
+    requestId,
     logger: () => undefined,
     mfaChallengeToken,
     connectedClientId,

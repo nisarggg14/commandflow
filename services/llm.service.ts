@@ -1,12 +1,13 @@
 import { GoogleGenAI } from "@google/genai";
 
 import { assertProductionEnvironment } from "@/lib/production-env";
+import { redactDiagnosticText } from "@/lib/server-error-logging";
 
 
 
 assertProductionEnvironment();
 
-export const GEMINI_DEFAULT_MODEL = "gemini-2.5-flash";
+export const GEMINI_DEFAULT_MODEL = "gemini-3.8-flash";
 
 function normalizeModelName(model?: string): string {
   const trimmed = model?.trim();
@@ -43,39 +44,55 @@ export interface GeminiFailureDetails {
 }
 
 function providerPayload(error: unknown): Record<string, unknown> | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  const record = error as Record<string, unknown>;
-  for (const value of [record.error, record.details, record.response, record.responseInternal]) {
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      const nested = value as Record<string, unknown>;
-      if (nested.error && typeof nested.error === "object" && !Array.isArray(nested.error)) {
-        return nested.error as Record<string, unknown>;
-      }
-      if (typeof nested.message === "string" || typeof nested.code === "string") return nested;
-    }
-  }
+  const visited = new Set<object>();
+  const visit = (value: unknown, depth: number): Record<string, unknown> | undefined => {
+    if (depth > 6 || value === null || value === undefined) return undefined;
 
-  const message = typeof record.message === "string" ? record.message : "";
-  const jsonStart = message.indexOf("{");
-  if (jsonStart >= 0) {
-    try {
-      const parsed: unknown = JSON.parse(message.slice(jsonStart));
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const parsedRecord = parsed as Record<string, unknown>;
-        const payload = parsedRecord.error;
-        if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-          return payload as Record<string, unknown>;
-        }
+    if (typeof value === "string") {
+      const jsonStart = value.indexOf("{");
+      if (jsonStart < 0) return undefined;
+      try {
+        return visit(JSON.parse(value.slice(jsonStart)), depth + 1);
+      } catch {
+        return undefined;
       }
-    } catch {
-      return undefined;
     }
-  }
-  return undefined;
+
+    if (typeof value !== "object" || visited.has(value)) return undefined;
+    visited.add(value);
+    const record = value as Record<string, unknown>;
+    const message = typeof record.message === "string" ? record.message : undefined;
+    const hasProviderFields = message !== undefined
+      || typeof record.code === "string"
+      || typeof record.code === "number"
+      || typeof record.status === "string";
+
+    if (hasProviderFields && record.error === undefined) {
+      const parsedMessage = message ? visit(message, depth + 1) : undefined;
+      return parsedMessage ?? record;
+    }
+
+    for (const key of ["error", "details", "response", "responseInternal", "body", "data", "cause"]) {
+      const nested = record[key];
+      if (Array.isArray(nested)) {
+        for (const item of nested.slice(0, 20)) {
+          const payload = visit(item, depth + 1);
+          if (payload) return payload;
+        }
+      } else {
+        const payload = visit(nested, depth + 1);
+        if (payload) return payload;
+      }
+    }
+
+    return message ? visit(message, depth + 1) : undefined;
+  };
+
+  return visit(error, 0);
 }
 
-function redactProviderMessage(value: string): string {
-  return value
+function redactProviderMessage(value: string, sensitiveValues: string[] = []): string {
+  return redactDiagnosticText(value, sensitiveValues)
     .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[redacted]")
     .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
     .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)["']?[^"',\s}]+/gi, "$1[redacted]")
@@ -85,13 +102,16 @@ function redactProviderMessage(value: string): string {
     .slice(0, 240);
 }
 
-export function getGeminiFailureDetails(error: unknown): GeminiFailureDetails {
+export function getGeminiFailureDetails(
+  error: unknown,
+  sensitiveValues: string[] = [],
+): GeminiFailureDetails {
   const category = classifyGeminiError(error);
   const status = readStatus(error);
   const provider = providerPayload(error);
-  const rawCode = provider?.status ?? provider?.code ?? (error && typeof error === "object"
+  const rawCode = [provider?.status, provider?.code, error && typeof error === "object"
     ? (error as { code?: unknown }).code
-    : undefined);
+    : undefined].find((value) => typeof value === "string" && !/^\d+$/.test(value));
   const rawMessage = typeof provider?.message === "string"
     ? provider.message
     : error instanceof Error
@@ -101,14 +121,17 @@ export function getGeminiFailureDetails(error: unknown): GeminiFailureDetails {
   return {
     ...(status === undefined ? {} : { status }),
     ...(typeof rawCode === "string" && !/^\d+$/.test(rawCode)
-      ? { providerCode: rawCode.slice(0, 80) }
+      ? { providerCode: rawCode.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80) }
       : {}),
-    ...(rawMessage ? { providerMessage: redactProviderMessage(rawMessage) } : {}),
+    ...(rawMessage ? { providerMessage: redactProviderMessage(rawMessage, sensitiveValues) } : {}),
     category,
   };
 }
 
 export function geminiSafeFailureMessage(details: GeminiFailureDetails): string {
+  if (details.category === "rate_limited" || details.status === 429) {
+    return GEMINI_QUOTA_MESSAGE;
+  }
   if (details.category !== "permanent") {
     return GEMINI_TEMPORARY_UNAVAILABLE_MESSAGE;
   }
@@ -122,21 +145,27 @@ export function geminiSafeFailureMessage(details: GeminiFailureDetails): string 
     return "Gemini rejected the server credentials or permissions. Please contact the administrator.";
   }
   if (details.status === 404) {
-    return "The configured Gemini model was not found (HTTP 404). Please contact the administrator.";
+    return `Gemini API returned HTTP 404${details.providerMessage ? `: ${details.providerMessage}` : ""}. Verify the configured model and endpoint.`;
   }
   if (details.status === 400) {
-    return "Gemini rejected the intent-analysis request. Please try a simpler command.";
+    return `Gemini API rejected the intent-analysis request (HTTP 400)${details.providerMessage ? `: ${details.providerMessage}` : ""}.`;
   }
   if (details.status !== undefined) {
-    return `Gemini intent analysis failed with HTTP ${details.status}. Please try again or contact the administrator.`;
+    return `Gemini API returned HTTP ${details.status}${details.providerCode ? ` (${details.providerCode})` : ""}${details.providerMessage ? `: ${details.providerMessage}` : ""}.`;
   }
-  return "Gemini intent analysis failed. Please try again or contact the administrator.";
+  if (details.providerCode || details.providerMessage) {
+    return `Gemini intent analysis failed${details.providerCode ? ` (${details.providerCode})` : ""}${details.providerMessage ? `: ${details.providerMessage}` : ""}. Please try again or contact the administrator.`;
+  }
+  return `Gemini intent analysis failed (${details.category}). Please check server diagnostics or contact the administrator.`;
 }
 
 export class GeminiIntentAnalysisError extends Error {
-  constructor(readonly details: GeminiFailureDetails) {
+  readonly cause?: unknown;
+
+  constructor(readonly details: GeminiFailureDetails, cause?: unknown) {
     super(geminiSafeFailureMessage(details));
     this.name = "GeminiIntentAnalysisError";
+    this.cause = cause;
   }
 }
 
@@ -168,13 +197,52 @@ export class GeminiQuotaError extends Error {
 }
 
 function readStatus(error: unknown): number | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  const value = error as { status?: unknown; statusCode?: unknown; code?: unknown };
-  const status = Number(value.status ?? value.statusCode ?? value.code);
-  if (Number.isInteger(status)) return status;
-  if (value.code === "UNAVAILABLE") return 503;
-  if (value.code === "RESOURCE_EXHAUSTED") return 429;
-  return undefined;
+  const visited = new Set<object>();
+  const visit = (value: unknown, depth: number): number | undefined => {
+    if (depth > 6 || value === null || value === undefined) return undefined;
+    if (typeof value === "string") {
+      const jsonStart = value.indexOf("{");
+      if (jsonStart < 0) return undefined;
+      try {
+        return visit(JSON.parse(value.slice(jsonStart)), depth + 1);
+      } catch {
+        return undefined;
+      }
+    }
+    if (typeof value !== "object" || visited.has(value)) return undefined;
+    visited.add(value);
+    const record = value as Record<string, unknown>;
+
+    for (const candidate of [
+      record.status,
+      record.statusCode,
+      record.code,
+      (record.responseInternal as { status?: unknown } | undefined)?.status,
+      (record.response as { status?: unknown } | undefined)?.status,
+    ]) {
+      const status = Number(candidate);
+      if (Number.isInteger(status) && status >= 100 && status <= 599) return status;
+    }
+    if (record.code === "UNAVAILABLE") return 503;
+    if (record.code === "RESOURCE_EXHAUSTED") return 429;
+
+    for (const nested of [
+      record.error,
+      record.details,
+      record.response,
+      record.responseInternal,
+      record.body,
+      record.data,
+      record.cause,
+      record.message,
+    ]) {
+      const status = visit(nested, depth + 1);
+      if (status !== undefined) return status;
+    }
+    return undefined;
+  };
+
+  return visit(error, 0);
 }
 
 function readNetworkCode(error: unknown): string | undefined {
@@ -203,8 +271,12 @@ export function classifyGeminiError(error: unknown): GeminiErrorCategory {
     const message = typeof (error as { message?: unknown }).message === "string"
       ? (error as { message: string }).message
       : "";
-    if (code === "UNAVAILABLE" || /\bUNAVAILABLE\b|SERVICE_UNAVAILABLE/i.test(message)) return "unavailable";
-    if (code === "RESOURCE_EXHAUSTED" || /RESOURCE_EXHAUSTED|rate.?limit|\b429\b/i.test(message)) return "rate_limited";
+    const provider = providerPayload(error);
+    const providerCode = [provider?.status, provider?.code].find((value) => typeof value === "string");
+    if (code === "UNAVAILABLE" || providerCode === "UNAVAILABLE") return "unavailable";
+    if (code === "RESOURCE_EXHAUSTED" || providerCode === "RESOURCE_EXHAUSTED") return "rate_limited";
+    if (!provider && /\bUNAVAILABLE\b|SERVICE_UNAVAILABLE/i.test(message)) return "unavailable";
+    if (!provider && /RESOURCE_EXHAUSTED|rate.?limit|\b429\b/i.test(message)) return "rate_limited";
   }
 
   return "permanent";
@@ -272,6 +344,7 @@ function providerRetryDelay(error: unknown, now: number): number | undefined {
 
 interface GeminiRetryOptions {
   model?: string;
+  sensitiveValues?: string[];
   maxAttempts?: number;
   maxElapsedMs?: number;
   requestTimeoutMs?: number;
@@ -326,11 +399,11 @@ export async function retryGeminiRequest<T>(
       }
       return result;
     } catch (error) {
-      const details = getGeminiFailureDetails(error);
+      const details = getGeminiFailureDetails(error, options.sensitiveValues);
       const { category } = details;
       log({
         model,
-        endpoint: "Gemini API default endpoint",
+        endpoint: "https://generativelanguage.googleapis.com/v1beta/interactions",
         attempt: attempts,
         maxAttempts,
         category,
@@ -373,18 +446,48 @@ export interface LLMResponse {
   text: string;
 }
 
+interface GeminiInteractionRequest {
+  model: string;
+  input: string;
+  store: false;
+  response_format: {
+    type: "text";
+    mime_type: "application/json";
+  };
+}
+
+interface GeminiClientFactory {
+  (apiKey: string): {
+    interactions: {
+      create(request: GeminiInteractionRequest): Promise<{ output_text?: string }>;
+    };
+  };
+}
+
+function createGeminiClient(apiKey: string): ReturnType<GeminiClientFactory> {
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      timeout: GEMINI_REQUEST_TIMEOUT_MS,
+    },
+  });
+}
+
 export function getGeminiConfigurationStatus() {
   return {
     model: MODEL,
     apiKeyConfigured: Boolean(process.env.GEMINI_API_KEY?.trim()),
-    endpoint: "Gemini API default endpoint",
-    sdkRetries: 1,
+    endpoint: "https://generativelanguage.googleapis.com/v1beta/interactions",
+    apiVersion: "v1beta",
+    sdkRetries: 0,
     requestTimeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
   } as const;
 }
 
 export async function generateResponse(
-  prompt: string
+  prompt: string,
+  sensitiveValues: string[] = [],
+  createClient: GeminiClientFactory = createGeminiClient,
 ): Promise<LLMResponse> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey?.trim()) {
@@ -398,30 +501,45 @@ export async function generateResponse(
     });
     throw new GeminiIntentAnalysisError(details);
   }
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      timeout: GEMINI_REQUEST_TIMEOUT_MS,
-      retryOptions: { attempts: 1 },
-    },
-  });
+  const ai = createClient(apiKey);
   try {
     const response = await retryGeminiRequest(
-      () => ai.models.generateContent({
+      () => ai.interactions.create({
         model: MODEL,
-        contents: prompt,
-        config: { responseMimeType: "application/json" },
+        input: prompt,
+        store: false,
+        response_format: { type: "text", mime_type: "application/json" },
       }),
-      { model: MODEL },
+      { model: MODEL, sensitiveValues: [apiKey, prompt, ...sensitiveValues] },
     );
 
     return {
       success: true,
-      text: response.text ?? "",
+      text: response.output_text ?? "",
     };
   } catch (error) {
     if (error instanceof GeminiTemporaryUnavailableError) throw error;
-    const details = getGeminiFailureDetails(error);
-    throw new GeminiIntentAnalysisError(details);
+    const diagnosticSensitiveValues = [apiKey, prompt, ...sensitiveValues];
+    const details = getGeminiFailureDetails(error, diagnosticSensitiveValues);
+    const original = error && typeof error === "object"
+      ? error as { name?: unknown; stack?: unknown }
+      : undefined;
+    console.error("[llm] Gemini intent request failed", {
+      model: MODEL,
+      endpoint: "https://generativelanguage.googleapis.com/v1beta/interactions",
+      category: details.category,
+      ...(details.status === undefined ? {} : { providerStatus: details.status }),
+      ...(details.providerCode ? { providerCode: details.providerCode } : {}),
+      ...(details.providerMessage ? { providerMessage: details.providerMessage } : {}),
+      errorName: error instanceof Error
+        ? redactDiagnosticText(error.name, diagnosticSensitiveValues)
+        : typeof original?.name === "string"
+          ? redactDiagnosticText(original.name, diagnosticSensitiveValues)
+          : "UnknownError",
+      ...(typeof original?.stack === "string"
+        ? { errorStack: redactDiagnosticText(original.stack, diagnosticSensitiveValues) }
+        : {}),
+    });
+    throw new GeminiIntentAnalysisError(details, error);
   }
 }

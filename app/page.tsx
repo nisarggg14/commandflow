@@ -279,6 +279,48 @@ export default function Page() {
           setActiveConnectedClientId(undefined)
           setConnectedClients((prev) => prev.filter((client) => client.id !== activeConnectedClientId))
         }
+        if (typeof data.response === 'string') {
+          setActiveConnectedClientId(data.connectedClientId ?? undefined)
+          setConversations((prev) => prev.map((conversation) => (
+            conversation.id === activeConversationId
+              ? { ...conversation, connectedClientId: data.connectedClientId ?? null }
+              : conversation
+          )))
+
+          try {
+            const payload = JSON.parse(data.response) as CommandExecutionPayload & { message?: string }
+            if (
+              payload.status === 'FAILED' &&
+              typeof payload.message === 'string' &&
+              (payload.message.includes('requires step-up MFA verification') ||
+                payload.message.includes('requires a valid step-up MFA challenge'))
+            ) {
+              setPendingMfaRequest({
+                conversationId: activeConversationId,
+                message,
+                toolName: payload.toolName ?? undefined,
+              })
+              setMfaCode('')
+              setMfaError('')
+              return
+            }
+          } catch {
+            // Render malformed execution responses as normal assistant content.
+          }
+
+          const executionMessage: Message = {
+            id: createClientId(),
+            role: 'assistant',
+            content: data.response,
+          }
+          setConversations((prev) => prev.map((conversation) => (
+            conversation.id === activeConversationId
+              ? { ...conversation, messages: [...conversation.messages, executionMessage] }
+              : conversation
+          )))
+          return
+        }
+
         const errorMessage: Message = {
           id: createClientId(),
           role: 'assistant',

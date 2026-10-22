@@ -2,14 +2,63 @@ import test, { mock } from "node:test";
 import dns from "node:dns/promises";
 import assert from "node:assert/strict";
 import { encryptSecret } from "../lib/mfa";
-import { withAuthenticatedConnectedClient } from "../services/mcp-connector.service";
+import { getConnectedClientToolNames, withAuthenticatedConnectedClient } from "../services/mcp-connector.service";
 import { getProduct } from "../services/inventory-api.service";
+import { CLIENT_TOOL_NAMES } from "../mcp/client-tool-policy";
 
 process.env.MFA_ENCRYPTION_KEY ??= "test-mcp-connector-encryption-key-32-bytes";
 
 function fakeContext(db: unknown, connectedClientId = "client-1") {
   return { companyId: "company-1", connectedClientId, prisma: db as never };
 }
+
+test("connected-client tool policy parses the JSON persisted by registration and updates", async () => {
+  let query: unknown;
+  const db = {
+    connectedClient: {
+      findFirst: async (args: unknown) => {
+        query = args;
+        return { enabledTools: JSON.stringify(["products.getProducts", "orders.getOrders"]) };
+      },
+    },
+  };
+
+  const enabledTools = await getConnectedClientToolNames("client-1", "company-1", db as never);
+
+  assert.deepEqual(enabledTools, ["products.getProducts", "orders.getOrders"]);
+  assert.deepEqual(query, {
+    where: { id: "client-1", companyId: "company-1", status: "ACTIVE" },
+    select: { enabledTools: true },
+  });
+});
+
+test("connected-client tool policy preserves null defaults and rejects malformed persisted lists", async () => {
+  const nullConfigDb = {
+    connectedClient: {
+      findFirst: async () => ({ enabledTools: null }),
+    },
+  };
+  assert.deepEqual(
+    await getConnectedClientToolNames("client-1", "company-1", nullConfigDb as never),
+    [...CLIENT_TOOL_NAMES],
+  );
+
+  for (const enabledTools of [
+    '{"products.getProducts":true}',
+    JSON.stringify(["products.getProducts", "arbitrary.execute"]),
+    "not-json",
+  ]) {
+    const invalidConfigDb = {
+      connectedClient: {
+        findFirst: async () => ({ enabledTools }),
+      },
+    };
+    await assert.rejects(
+      () => getConnectedClientToolNames("client-1", "company-1", invalidConfigDb as never),
+      /Connected client tool configuration is invalid/,
+    );
+  }
+});
 
 test("MCP connector derives base URL and Authorization from the selected client", async () => {
   const originalFetch = globalThis.fetch;

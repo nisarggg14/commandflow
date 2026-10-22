@@ -24,3 +24,20 @@ export function normalizeEnabledToolNames(value: unknown): string[] | undefined 
   }
   return names;
 }
+
+export function parseStoredEnabledToolNames(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error("Connected client tool configuration is invalid.");
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      throw new Error("Connected client tool configuration is invalid.");
+    }
+    return normalizeEnabledToolNames(parsed);
+  } catch {
+    throw new Error("Connected client tool configuration is invalid.");
+  }
+}

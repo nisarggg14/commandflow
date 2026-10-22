@@ -152,7 +152,7 @@ ${message}
   traceHooks?.onStageStart?.("intent-analysis");
   let llmResponse;
   try {
-    llmResponse = await generate(prompt);
+    llmResponse = await generate(prompt, [message]);
   } catch (error) {
     if (error instanceof GeminiTemporaryUnavailableError) {
       const fallback = deterministicFallback(message, server);
@@ -173,7 +173,7 @@ ${message}
 
     const details = error instanceof GeminiIntentAnalysisError
       ? error.details
-      : getGeminiFailureDetails(error);
+      : getGeminiFailureDetails(error, [message]);
     if (!(error instanceof GeminiIntentAnalysisError)) {
       console.error("[intent] Gemini request failed", {
         ...getGeminiConfigurationStatus(),

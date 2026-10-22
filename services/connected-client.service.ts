@@ -7,6 +7,7 @@ import {
   NotFoundError,
   ValidationFailedError,
 } from "@/lib/errors";
+import { parseStoredEnabledToolNames } from "@/mcp/client-tool-policy";
 import {
   createConnectedClientSchema,
   updateConnectedClientSchema,
@@ -25,13 +26,7 @@ export interface SafeConnectedClient {
 }
 
 function parseEnabledTools(value: unknown): string[] | null {
-  if (typeof value !== "string" || !value.trim()) return null;
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed : null;
-  } catch {
-    return null;
-  }
+  return parseStoredEnabledToolNames(value) ?? null;
 }
 
 export function toSafeConnectedClient(client: ConnectedClient): SafeConnectedClient {

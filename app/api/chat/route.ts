@@ -1,26 +1,43 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { processChat } from "@/services/chat.service";
 import { authenticate } from "@/lib/auth";
-import { GeminiQuotaError } from "@/services/llm.service";
 import { AuthenticationServiceError, NotFoundError, UnauthorizedError } from "@/lib/errors";
+import { chatServiceErrorResponse } from "@/lib/chat-service-error-response";
+import { logServerError } from "@/lib/server-error-logging";
 
 import { chatRequestSchema } from "@/validators/chat.validator";
 
 export async function POST(req: NextRequest) {
+  const requestId = randomUUID();
+  const respond = (body: unknown, init?: ResponseInit) => {
+    const response = NextResponse.json(body, init);
+    response.headers.set("X-Request-ID", requestId);
+    return response;
+  };
+  console.info("[api.chat] request received", { requestId });
+  const sensitiveRequestValues = [
+    req.headers.get("authorization") ?? "",
+    req.headers.get("cookie") ?? "",
+  ];
+
   try {
     const authUser = await authenticate(req);
     const limit = await enforceRateLimit(`chat:${authUser.id}`, 60, 60 * 1000);
 
-    if (!limit.allowed) return NextResponse.json({ success: false, message: "Chat rate limit exceeded." }, { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } });
+    if (!limit.allowed) return respond({ success: false, message: "Chat rate limit exceeded." }, { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } });
     const contentLength = Number(req.headers.get("content-length") ?? 0);
 
-    if (contentLength > 64 * 1024) return NextResponse.json({ success: false, message: "Request body is too large." }, { status: 413 });
+    if (contentLength > 64 * 1024) return respond({ success: false, message: "Request body is too large." }, { status: 413 });
 
     const rawBody = await req.text();
-    if (Buffer.byteLength(rawBody, "utf8") > 64 * 1024) return NextResponse.json({ success: false, message: "Request body is too large." }, { status: 413 });
+    if (Buffer.byteLength(rawBody, "utf8") > 64 * 1024) return respond({ success: false, message: "Request body is too large." }, { status: 413 });
     const body = chatRequestSchema.parse(JSON.parse(rawBody));
+    sensitiveRequestValues.push(
+      ...Object.values(body).filter((value): value is string => typeof value === "string"),
+    );
 
     const result = await processChat({
       conversationId: body.conversationId,
@@ -33,27 +50,26 @@ export async function POST(req: NextRequest) {
         : typeof body.connectedClientId === "string"
           ? body.connectedClientId
           : undefined,
+      requestId,
     });
 
-    return NextResponse.json(result);
+    return respond(result);
   } catch (error) {
-    console.error("[api.chat] request failed", {
-      errorName: error instanceof Error ? error.name : "UnknownError",
-    });
+    logServerError("api.chat", error, sensitiveRequestValues, requestId);
 
     if (error instanceof UnauthorizedError) {
-      return NextResponse.json({ success: false, message: error.message }, { status: 401 });
+      return respond({ success: false, message: error.message }, { status: 401 });
     }
 
     if (error instanceof AuthenticationServiceError) {
-      return NextResponse.json(
+      return respond(
         { success: false, message: "Authentication service unavailable. Please try again later." },
         { status: 503 }
       );
     }
 
     if (error instanceof Error && error.message === "Conversation not found.") {
-      return NextResponse.json(
+      return respond(
         {
           success: false,
           message: error.message,
@@ -62,25 +78,24 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (error instanceof SyntaxError || (error && typeof error === "object" && (error as { name?: string }).name === "ZodError")) return NextResponse.json({ success: false, message: "Invalid chat request." }, { status: 400 });
+    if (error instanceof SyntaxError || (error && typeof error === "object" && (error as { name?: string }).name === "ZodError")) return respond({ success: false, message: "Invalid chat request." }, { status: 400 });
 
 
 
     if (error instanceof NotFoundError) {
-      return NextResponse.json({ success: false, message: error.message }, { status: 404 });
+      return respond({ success: false, message: error.message }, { status: 404 });
     }
 
-    if (error instanceof GeminiQuotaError) {
-      return NextResponse.json(
-        { success: false, message: error.message },
-        { status: 429 }
-      );
+    const serviceErrorResponse = chatServiceErrorResponse(error);
+    if (serviceErrorResponse) {
+      serviceErrorResponse.headers.set("X-Request-ID", requestId);
+      return serviceErrorResponse;
     }
 
-    return NextResponse.json(
+    return respond(
       {
         success: false,
-        message: "Chat service unavailable. Please try again later.",
+        message: "Chat request failed. Please try again later.",
       },
       { status: 500 }
     );

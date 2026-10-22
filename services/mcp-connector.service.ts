@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { decryptSecret } from "@/lib/mfa";
 import { NotFoundError } from "@/lib/errors";
-import { CLIENT_TOOL_NAMES, normalizeEnabledToolNames } from "@/mcp/client-tool-policy";
+import { CLIENT_TOOL_NAMES, parseStoredEnabledToolNames } from "@/mcp/client-tool-policy";
 import { runWithInventoryApiConnection, type InventoryApiConnection } from "@/services/inventory-api.service";
 import { runWithOrderApiConnection } from "@/services/order-api.service";
 import type { MCPContext } from "@/mcp/types";
@@ -37,11 +37,7 @@ export async function getConnectedClientToolNames(
     select: { enabledTools: true } as any,
   } as any);
   if (!client) throw new NotFoundError("Selected connected client is unavailable.");
-  try {
-    return normalizeEnabledToolNames((client as { enabledTools?: unknown }).enabledTools) ?? [...CLIENT_TOOL_NAMES];
-  } catch {
-    throw new Error("Connected client tool configuration is invalid.");
-  }
+  return parseStoredEnabledToolNames((client as { enabledTools?: unknown }).enabledTools) ?? [...CLIENT_TOOL_NAMES];
 }
 
 function readAuthConfig(authType: string, encryptedAuthConfig: string | null): Record<string, string> {

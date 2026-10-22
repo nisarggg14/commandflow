@@ -9,6 +9,7 @@ import { runWithExternalRequestTrace } from "./external-request-trace";
 import { EXECUTION_STAGE_DEFINITIONS, type ExecutionStage, type ExecutionStageId, type ExternalRequestTraceHooks } from "@/types/execution-trace";
 import type { ToolExecutionTraceHooks } from "@/mcp/types";
 import { getExecutionStatus } from "@/lib/execution-status";
+import { logServerError } from "@/lib/server-error-logging";
 
 interface ChatRequest {
   conversationId: string;
@@ -17,6 +18,7 @@ interface ChatRequest {
   companyId: string;
   mfaChallengeToken?: string;
   connectedClientId?: string | null;
+  requestId?: string;
 }
 
 function toPermission(role: UserRole | string): Permission | string {
@@ -129,7 +131,15 @@ export async function processChat(data: ChatRequest) {
   }
 
   const enabledToolNames = await getConnectedClientToolNames(selectedConnectedClientId, companyId, prisma);
-  const server = createCommandServer(userId, companyId, toPermission(user.role), mfaChallengeToken, selectedConnectedClientId, enabledToolNames);
+  const server = createCommandServer(
+    userId,
+    companyId,
+    toPermission(user.role),
+    mfaChallengeToken,
+    selectedConnectedClientId,
+    enabledToolNames,
+    data.requestId,
+  );
   const startedAt = Date.now();
   const trace = new ExecutionTrace();
   let responsePayload: unknown = {
@@ -139,32 +149,18 @@ export async function processChat(data: ChatRequest) {
     message: "Unknown command",
     stages: trace.snapshot(),
   };
+  let commandFailed = false;
+  let commandFailureMessage: string | undefined;
 
-  let parsedCommand;
-  try {
-    parsedCommand = await parseCommand(message, server, {
-      onStageStart: (stage) => trace.start(stage),
-      onStageComplete: (stage) => trace.complete(stage),
-      onStageFailed: (stage, error) => trace.fail(stage, error),
-      onStageFallback: (stage, note) => trace.note(stage, note),
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error
-      ? error.message
-      : "Command intent analysis failed. Please try again.";
-    if (!trace.snapshot().some((stage) => stage.status === "failed")) {
-      trace.fail("intent-analysis", errorMessage);
-    }
-    trace.skipAfterFailure();
-    responsePayload = buildExecutionPayload({
-      success: false,
-      tool: null,
-      message: error instanceof Error ? error.message : "Command intent analysis failed. Please try again.",
-      error: { name: error instanceof Error ? error.name : "CommandError", message: error instanceof Error ? error.message : "Command intent analysis failed. Please try again." },
-    }, startedAt, server.metrics(), trace.snapshot());
-  }
+  const parsedCommand = await parseCommand(message, server, {
+    onStageStart: (stage) => trace.start(stage),
+    onStageComplete: (stage) => trace.complete(stage),
+    onStageFailed: (stage, error) => trace.fail(stage, error),
+    onStageFallback: (stage, note) => trace.note(stage, note),
+  });
 
   if (parsedCommand?.tool) {
+    const toolName = parsedCommand.tool;
     let executionResult;
     const traceHooks: ToolExecutionTraceHooks = {
       onStageStart: (stage) => trace.start(stage),
@@ -179,24 +175,34 @@ export async function processChat(data: ChatRequest) {
 
     try {
       const resolvedArguments = await server.withConnectedClient(() => resolveProductReference(
-          parsedCommand.tool!,
+          toolName,
           parsedCommand.arguments ?? {},
           message
         ));
       executionResult = await runWithExternalRequestTrace(externalRequestTrace, () => {
-        return server.executeTool(parsedCommand.tool, resolvedArguments, traceHooks);
+        return server.executeTool(toolName, resolvedArguments, traceHooks);
       });
     } catch (error) {
+      console.error("[api.chat] tool dispatch failed", {
+        requestId: data.requestId,
+        toolName,
+        connectedClientId: selectedConnectedClientId ?? null,
+      });
+      logServerError("api.chat.tool-dispatch", error, [message], data.requestId);
       const errorMessage = "Command could not be completed. Please try again.";
       executionResult = {
         success: false,
-        tool: parsedCommand.tool,
+        tool: toolName,
         message: errorMessage,
         error: {
           name: error instanceof Error ? error.name : "ExecutionError",
           message: errorMessage,
         },
       };
+    }
+    commandFailed = !executionResult.success && executionResult.outcome !== "APPROVAL_REQUIRED";
+    if (commandFailed) {
+      commandFailureMessage = executionResult.message ?? "Command could not be completed. Please try again.";
     }
 
     if (executionResult.success) trace.start("result-processing");
@@ -226,7 +232,8 @@ export async function processChat(data: ChatRequest) {
   });
 
   return {
-    success: true,
+    success: !commandFailed,
+    ...(commandFailureMessage ? { message: commandFailureMessage } : {}),
     conversationId,
     connectedClientId: selectedConnectedClientId ?? null,
     response: JSON.stringify(responsePayload),
