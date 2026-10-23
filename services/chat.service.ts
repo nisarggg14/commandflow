@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { MessageRole, UserRole } from "@prisma/client";
-import { parseCommand } from "./command-parser.service";
+import { parseCommand, type ParsedCommand } from "./command-parser.service";
 import { createCommandServer } from "./tool.service";
 import { Permission } from "@/mcp/types";
 import { resolveProductReference } from "./product-resolver.service";
@@ -10,6 +10,8 @@ import { EXECUTION_STAGE_DEFINITIONS, type ExecutionStage, type ExecutionStageId
 import type { ToolExecutionTraceHooks } from "@/mcp/types";
 import { getExecutionStatus } from "@/lib/execution-status";
 import { logServerError } from "@/lib/server-error-logging";
+import { InventoryApiError } from "@/services/inventory-api.service";
+import { toolRequiresConnectedClient } from "@/mcp/client-tool-policy";
 
 interface ChatRequest {
   conversationId: string;
@@ -17,7 +19,7 @@ interface ChatRequest {
   userId: string;
   companyId: string;
   mfaChallengeToken?: string;
-  connectedClientId?: string | null;
+  connectedClientId: string | null;
   requestId?: string;
 }
 
@@ -119,11 +121,9 @@ export async function processChat(data: ChatRequest) {
   }
 
   const requestedConnectedClientId = data.connectedClientId;
-  const selectedConnectedClientId = requestedConnectedClientId !== undefined
-    ? await validateConnectedClientSelection(requestedConnectedClientId, companyId, prisma)
-    : await validateConnectedClientSelection(conversation.connectedClientId, companyId, prisma);
+  const selectedConnectedClientId = await validateConnectedClientSelection(requestedConnectedClientId, companyId, prisma);
 
-  if (requestedConnectedClientId !== undefined && selectedConnectedClientId !== (conversation.connectedClientId ?? undefined)) {
+  if (selectedConnectedClientId !== (conversation.connectedClientId ?? undefined)) {
     await prisma.conversation.update({
       where: { id: conversation.id },
       data: { connectedClientId: selectedConnectedClientId ?? null },
@@ -141,7 +141,7 @@ export async function processChat(data: ChatRequest) {
     data.requestId,
   );
   const startedAt = Date.now();
-  const trace = new ExecutionTrace();
+  const trace = new ExecutionTrace(data.requestId);
   let responsePayload: unknown = {
     type: "execution",
     status: "UNKNOWN",
@@ -152,15 +152,25 @@ export async function processChat(data: ChatRequest) {
   let commandFailed = false;
   let commandFailureMessage: string | undefined;
 
-  const parsedCommand = await parseCommand(message, server, {
-    onStageStart: (stage) => trace.start(stage),
-    onStageComplete: (stage) => trace.complete(stage),
-    onStageFailed: (stage, error) => trace.fail(stage, error),
-    onStageFallback: (stage, note) => trace.note(stage, note),
-  });
+  let parsedCommand: ParsedCommand;
+  try {
+    parsedCommand = await parseCommand(message, server, {
+      onStageStart: (stage) => trace.start(stage),
+      onStageComplete: (stage) => trace.complete(stage),
+      onStageFailed: (stage, error) => trace.fail(stage, error),
+      onStageFallback: (stage, note) => trace.note(stage, note),
+    });
+  } catch (error) {
+    trace.skipPending("Skipped because intent analysis or plan preparation failed.");
+    if (error && typeof error === "object") {
+      Object.assign(error, { executionTrace: trace.snapshot() });
+    }
+    throw error;
+  }
 
   if (parsedCommand?.tool) {
     const toolName = parsedCommand.tool;
+    trace.setToolName(toolName);
     let executionResult;
     const traceHooks: ToolExecutionTraceHooks = {
       onStageStart: (stage) => trace.start(stage),
@@ -169,17 +179,22 @@ export async function processChat(data: ChatRequest) {
     };
     const externalRequestTrace: ExternalRequestTraceHooks = {
       onRequestStart: () => trace.externalRequestStart(),
-      onRequestComplete: () => trace.externalRequestComplete(),
-      onRequestFailed: (error) => trace.externalRequestFailed(error),
+      onRequestComplete: (httpStatus) => trace.externalRequestComplete(httpStatus),
+      onRequestFailed: (error, httpStatus, errorCategory) => trace.externalRequestFailed(error, httpStatus, errorCategory),
     };
 
     try {
-      const resolvedArguments = await server.withConnectedClient(() => resolveProductReference(
-          toolName,
-          parsedCommand.arguments ?? {},
-          message
-        ));
-      executionResult = await runWithExternalRequestTrace(externalRequestTrace, () => {
+      executionResult = await runWithExternalRequestTrace(externalRequestTrace, async () => {
+        if (toolRequiresConnectedClient(toolName) && !selectedConnectedClientId) {
+          return server.executeTool(toolName, parsedCommand.arguments ?? {}, traceHooks);
+        }
+        const resolvedArguments = toolRequiresConnectedClient(toolName)
+          ? await server.withConnectedClient(() => resolveProductReference(
+              toolName,
+              parsedCommand.arguments ?? {},
+              message
+            ))
+          : parsedCommand.arguments ?? {};
         return server.executeTool(toolName, resolvedArguments, traceHooks);
       });
     } catch (error) {
@@ -189,7 +204,9 @@ export async function processChat(data: ChatRequest) {
         connectedClientId: selectedConnectedClientId ?? null,
       });
       logServerError("api.chat.tool-dispatch", error, [message], data.requestId);
-      const errorMessage = "Command could not be completed. Please try again.";
+      const errorMessage = error instanceof InventoryApiError
+        ? error.message
+        : "Command could not be completed. Please try again.";
       executionResult = {
         success: false,
         tool: toolName,
@@ -205,19 +222,24 @@ export async function processChat(data: ChatRequest) {
       commandFailureMessage = executionResult.message ?? "Command could not be completed. Please try again.";
     }
 
-    if (executionResult.success) trace.start("result-processing");
-    responsePayload = buildExecutionPayload(executionResult, startedAt, server.metrics(), trace.snapshot());
     if (executionResult.success) {
+      trace.skip("client-api-request", "Skipped because this tool did not make a connected API request.");
+      trace.start("result-processing");
       trace.complete("result-processing");
-      responsePayload = buildExecutionPayload(executionResult, startedAt, server.metrics(), trace.snapshot());
+    } else {
+      trace.skipPending(executionResult.outcome === "APPROVAL_REQUIRED"
+        ? "Skipped because the execution is awaiting administrator approval."
+        : "Skipped because an earlier execution stage failed.");
     }
+    responsePayload = buildExecutionPayload(executionResult, startedAt, server.metrics(), trace.snapshot());
   } else if (parsedCommand && parsedCommand.action === "unknown") {
+    trace.skipPending("Skipped because no supported tool matched the request.");
     responsePayload = {
       type: "execution" as const,
       status: "UNKNOWN" as const,
       toolName: null,
       executionTimeMs: Date.now() - startedAt,
-      message: "Unknown command",
+      message: parsedCommand.unsupportedMessage ?? "Unknown command",
       stages: trace.snapshot(),
       metrics: server.metrics(),
     };
@@ -241,19 +263,29 @@ export async function processChat(data: ChatRequest) {
 }
 
 class ExecutionTrace {
-  private readonly stages: ExecutionStage[] = EXECUTION_STAGE_DEFINITIONS.map((stage) => ({ ...stage, status: "pending" }));
+  private readonly stages: ExecutionStage[];
   private readonly startedAt = new Map<ExecutionStageId, number>();
   private readonly externalRequestStartedAt: number[] = [];
   private externalRequestDuration = 0;
 
-  start(id: ExecutionStageId) { const stage = this.stages.find((item) => item.id === id); if (!stage || stage.status === "completed" || stage.status === "failed") return; stage.status = "running"; this.startedAt.set(id, Date.now()); }
-  complete(id: ExecutionStageId) { const stage = this.stages.find((item) => item.id === id); if (!stage || stage.status === "completed" || stage.status === "failed") return; stage.status = "completed"; stage.durationMs = this.duration(id); }
-  fail(id: ExecutionStageId, error: string) { const stage = this.stages.find((item) => item.id === id); if (!stage || stage.status === "completed" || stage.status === "failed") return; stage.status = "failed"; stage.durationMs = this.duration(id); stage.error = error; }
+  constructor(requestId?: string) {
+    this.stages = EXECUTION_STAGE_DEFINITIONS.map((stage) => ({
+      ...stage,
+      status: "pending",
+      ...(requestId ? { requestId } : {}),
+    }));
+  }
+
+  setToolName(toolName: string) { for (const stage of this.stages) stage.toolName = toolName; }
+  start(id: ExecutionStageId) { const stage = this.stages.find((item) => item.id === id); if (!stage || stage.status !== "pending") return; stage.status = "running"; stage.startedAt = new Date().toISOString(); this.startedAt.set(id, Date.now()); }
+  complete(id: ExecutionStageId) { const stage = this.stages.find((item) => item.id === id); if (!stage || stage.status !== "running") return; stage.status = "completed"; stage.endedAt = new Date().toISOString(); stage.durationMs = this.duration(id); }
+  fail(id: ExecutionStageId, error: string) { const stage = this.stages.find((item) => item.id === id); if (!stage || stage.status !== "running") return; stage.status = "failed"; stage.endedAt = new Date().toISOString(); stage.durationMs = this.duration(id); stage.error = error; }
   note(id: ExecutionStageId, note: string) { const stage = this.stages.find((item) => item.id === id); if (stage) stage.note = note; }
-  skipAfterFailure() { const failedIndex = this.stages.findIndex((stage) => stage.status === "failed"); if (failedIndex < 0) return; for (const stage of this.stages.slice(failedIndex + 1)) if (stage.status === "pending") stage.status = "skipped"; }
-  externalRequestStart() { const stage = this.stages.find((item) => item.id === "client-api-request"); if (!stage || stage.status === "failed") return; stage.status = "running"; this.externalRequestStartedAt.push(Date.now()); }
-  externalRequestComplete() { const startedAt = this.externalRequestStartedAt.pop(); if (startedAt !== undefined) this.externalRequestDuration += Date.now() - startedAt; const stage = this.stages.find((item) => item.id === "client-api-request"); if (stage && this.externalRequestStartedAt.length === 0) { stage.status = "completed"; stage.durationMs = this.externalRequestDuration; } }
-  externalRequestFailed(_error: string) { const startedAt = this.externalRequestStartedAt.pop(); if (startedAt !== undefined) this.externalRequestDuration += Date.now() - startedAt; const stage = this.stages.find((item) => item.id === "client-api-request"); if (stage) { stage.status = "failed"; stage.durationMs = this.externalRequestDuration; stage.error = "Connected client request failed."; } }
+  skip(id: ExecutionStageId, reason: string) { const stage = this.stages.find((item) => item.id === id); if (stage?.status === "pending") { stage.status = "skipped"; stage.note = reason; } }
+  skipPending(reason: string) { for (const stage of this.stages) if (stage.status === "pending") { stage.status = "skipped"; stage.note = reason; } }
+  externalRequestStart() { const stage = this.stages.find((item) => item.id === "client-api-request"); if (!stage || stage.status === "failed") return; if (this.externalRequestStartedAt.length === 0) { stage.status = "running"; stage.startedAt = new Date().toISOString(); } this.externalRequestStartedAt.push(Date.now()); }
+  externalRequestComplete(httpStatus?: number) { const startedAt = this.externalRequestStartedAt.pop(); if (startedAt !== undefined) this.externalRequestDuration += Date.now() - startedAt; const stage = this.stages.find((item) => item.id === "client-api-request"); if (stage && this.externalRequestStartedAt.length === 0) { stage.status = "completed"; stage.endedAt = new Date().toISOString(); stage.durationMs = this.externalRequestDuration; if (httpStatus !== undefined) stage.httpStatus = httpStatus; } }
+  externalRequestFailed(_error: string, httpStatus?: number, errorCategory?: string) { const startedAt = this.externalRequestStartedAt.pop(); if (startedAt !== undefined) this.externalRequestDuration += Date.now() - startedAt; const stage = this.stages.find((item) => item.id === "client-api-request"); if (stage) { stage.status = "failed"; stage.endedAt = new Date().toISOString(); stage.durationMs = this.externalRequestDuration; stage.error = "Connected client request failed."; if (httpStatus !== undefined) stage.httpStatus = httpStatus; if (errorCategory) stage.errorCategory = errorCategory; } }
   snapshot() { return this.stages.map((stage) => ({ ...stage })); }
   private duration(id: ExecutionStageId) { const startedAt = this.startedAt.get(id); return startedAt === undefined ? undefined : Date.now() - startedAt; }
 }

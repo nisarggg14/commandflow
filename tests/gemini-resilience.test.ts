@@ -3,8 +3,14 @@ import test from "node:test";
 import type { PrismaClient } from "@prisma/client";
 
 import { createDefaultTools } from "../mcp/tools";
+import { createDeleteProductTool } from "../mcp/tools/products/deleteProduct";
+import { createGetProductTool } from "../mcp/tools/products/getProduct";
+import { createGetProductsTool } from "../mcp/tools/products/getProducts";
+import { createUpdateStockTool } from "../mcp/tools/products/updateStock";
+import { createSetBackgroundTool } from "../mcp/tools/ui/setBackground";
+import { createUpdateBackgroundTool } from "../mcp/tools/frontend/updateBackground";
 import { CommandFlowMCPServer } from "../mcp/server";
-import { Permission, type MCPContext } from "../mcp/types";
+import { Permission, type MCPContext, type MCPTool } from "../mcp/types";
 import { parseCommand } from "../services/command-parser.service";
 import {
   classifyGeminiError,
@@ -19,19 +25,145 @@ import {
   retryGeminiRequest,
 } from "../services/llm.service";
 
-function createServer(role = Permission.VIEWER) {
+function createServer(role = Permission.VIEWER, connectedClientId?: string) {
   const context: MCPContext = {
     userId: "user-1",
     companyId: "company-1",
     role,
     requestId: "request-1",
     timestamp: new Date().toISOString(),
-    prisma: {} as PrismaClient,
+    prisma: connectedClientId
+      ? {
+        connectedClient: {
+          findFirst: async () => ({ id: connectedClientId }),
+        },
+      } as unknown as PrismaClient
+      : {} as PrismaClient,
+    connectedClientId,
     logger: () => undefined,
   };
   const server = new CommandFlowMCPServer(context);
   server.registerTools(createDefaultTools());
   return server;
+}
+
+function createMockDeleteServer(role: Permission, connectedClientId?: string) {
+  let deleteRequests = 0;
+  let approvalRequests = 0;
+  const prisma = {
+    connectedClient: {
+      findFirst: async () => connectedClientId ? {
+        id: connectedClientId,
+        baseUrl: "https://inventory.example.test",
+        authType: "NONE",
+        authConfig: null,
+      } : null,
+    },
+    user: {
+      findUnique: async () => ({ id: "user-1", companyId: "company-1", role: "ADMIN" }),
+    },
+    approval: {
+      findFirst: async () => null,
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        approvalRequests += 1;
+        return {
+          id: "approval-delete-1",
+          ...data,
+          expiresAt: new Date(Date.now() + 60_000),
+          safeArgumentsSummary: "Delete inventory product P1003",
+        };
+      },
+    },
+    activityLog: {
+      create: async () => undefined,
+    },
+  } as unknown as PrismaClient;
+  const context: MCPContext = {
+    userId: "user-1",
+    companyId: "company-1",
+    role,
+    requestId: "request-delete-1",
+    timestamp: new Date().toISOString(),
+    prisma,
+    connectedClientId,
+    logger: () => undefined,
+  };
+  const server = new CommandFlowMCPServer(context);
+  const deleteTool = createDeleteProductTool();
+  server.registerTool({
+    ...deleteTool,
+    execute: async (input) => {
+      deleteRequests += 1;
+      return input;
+    },
+  });
+
+  return {
+    server,
+    getDeleteRequests: () => deleteRequests,
+    getApprovalRequests: () => approvalRequests,
+  };
+}
+
+function createMockCommandServer(role: Permission, connectedClientId?: string) {
+  const calls: string[] = [];
+  const prisma = {
+    connectedClient: {
+      findFirst: async () => connectedClientId ? {
+        id: connectedClientId,
+        baseUrl: "https://inventory.example.test",
+        authType: "NONE",
+        authConfig: null,
+      } : null,
+    },
+    user: {
+      findUnique: async () => ({ id: "user-1", companyId: "company-1", role: "ADMIN" }),
+    },
+    approval: {
+      findFirst: async () => null,
+      create: async ({ data }: { data: Record<string, unknown> }) => ({
+        id: "approval-delete-1",
+        ...data,
+        expiresAt: new Date(Date.now() + 60_000),
+        safeArgumentsSummary: "Delete inventory product P1003",
+      }),
+    },
+    activityLog: {
+      create: async () => undefined,
+    },
+  } as unknown as PrismaClient;
+  const context: MCPContext = {
+    userId: "user-1",
+    companyId: "company-1",
+    role,
+    requestId: "request-command-1",
+    timestamp: new Date().toISOString(),
+    prisma,
+    connectedClientId,
+    logger: () => undefined,
+  };
+  const server = new CommandFlowMCPServer(context);
+  const mockExecute = (tool: MCPTool): MCPTool => ({
+    ...tool,
+    execute: async (input) => {
+      const args = input as Record<string, unknown>;
+      if (tool.name === "products.updateStock" && args.sku === "INVALID-SKU") {
+        throw new Error("Variant not found for SKU: INVALID-SKU.");
+      }
+      calls.push(tool.name);
+      return args;
+    },
+  });
+  server.registerTools([
+    createGetProductsTool(),
+    createGetProductTool(),
+    createUpdateStockTool(),
+    createDeleteProductTool(),
+    createSetBackgroundTool(),
+    createUpdateBackgroundTool(),
+  ].map(mockExecute));
+
+  return { server, calls };
 }
 
 function transientError(status: number, headers?: Headers) {
@@ -169,6 +301,40 @@ test("Gemini timeouts are retried as transient failures", async () => {
   assert.equal(recovered, "ok");
   assert.equal(calls, 2);
   assert.equal(classifyGeminiError(new DOMException("timeout", "TimeoutError")), "network");
+});
+
+test("a Gemini operation that never settles is bounded by the configured request timeout", async () => {
+  const state = retryOptions({
+    maxAttempts: 1,
+    requestTimeoutMs: 10,
+    maxElapsedMs: 10,
+  });
+
+  await assert.rejects(
+    () => retryGeminiRequest(() => new Promise<string>(() => undefined), state.options),
+    (error: unknown) => {
+      assert.ok(error instanceof GeminiTemporaryUnavailableError);
+      assert.equal(error.attempts, 1);
+      assert.equal(error.category, "network");
+      return true;
+    },
+  );
+});
+
+test("exact read-only products command is routed before Gemini intent analysis", async () => {
+  let geminiCalls = 0;
+  const parsed = await parseCommand(
+    "List all products.",
+    createServer(),
+    undefined,
+    async () => {
+      geminiCalls += 1;
+      throw new GeminiTemporaryUnavailableError(3, 15_000, "unavailable");
+    },
+  );
+
+  assert.deepEqual(parsed, { tool: "products.getProducts", arguments: {} });
+  assert.equal(geminiCalls, 0);
 });
 
 test("Gemini provider diagnostics preserve status and redact secrets", () => {
@@ -335,6 +501,7 @@ test("mocked Gemini interaction returns validated intent without storing the pro
     store: false;
     response_format: { type: string; mime_type: string };
   }> = [];
+  let requestOptions: { timeout: number; maxRetries: number } | undefined;
   const createClient = () => ({
     interactions: {
       create: async (request: {
@@ -342,8 +509,9 @@ test("mocked Gemini interaction returns validated intent without storing the pro
         input: string;
         store: false;
         response_format: { type: "text"; mime_type: "application/json" };
-      }) => {
+      }, options: { timeout: number; maxRetries: number }) => {
         requests.push(request);
+        requestOptions = options;
         return {
           output_text: JSON.stringify({ tool: "products.getProducts", arguments: {} }),
         };
@@ -353,7 +521,7 @@ test("mocked Gemini interaction returns validated intent without storing the pro
 
   try {
     const parsed = await parseCommand(
-      "Show products",
+      "Summarize the products in our catalog",
       createServer(),
       undefined,
       (prompt, sensitiveValues) => generateResponse(prompt, sensitiveValues, createClient),
@@ -364,7 +532,11 @@ test("mocked Gemini interaction returns validated intent without storing the pro
     assert.equal(requests[0]?.model, getGeminiConfigurationStatus().model);
     assert.equal(requests[0]?.store, false);
     assert.deepEqual(requests[0]?.response_format, { type: "text", mime_type: "application/json" });
-    assert.match(requests[0]?.input ?? "", /Show products/);
+    assert.match(requests[0]?.input ?? "", /Summarize the products in our catalog/);
+    assert.deepEqual(requestOptions, {
+      timeout: getGeminiConfigurationStatus().requestTimeoutMs,
+      maxRetries: 0,
+    });
   } finally {
     if (previousApiKey === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = previousApiKey;
@@ -383,7 +555,7 @@ test("malformed mocked interaction output fails intent parsing", async () => {
   try {
     await assert.rejects(
       () => parseCommand(
-        "Show products",
+        "Summarize the products in our catalog",
         createServer(),
         undefined,
         (prompt, sensitiveValues) => generateResponse(prompt, sensitiveValues, createClient),
@@ -464,7 +636,7 @@ test("permanent provider errors preserve the HTTP status in safe intent diagnost
   const failedStages: Array<{ stage: string; message: string }> = [];
 
   await assert.rejects(
-    () => parseCommand("Show products", createServer(), {
+    () => parseCommand("Summarize the products in our catalog", createServer(), {
       onStageFailed: (stage, message) => failedStages.push({ stage, message }),
     }, async () => {
       throw new GeminiIntentAnalysisError({
@@ -483,10 +655,12 @@ test("permanent provider errors preserve the HTTP status in safe intent diagnost
   assert.match(failedStages[0]?.message ?? "", /verify the configured model and endpoint/i);
 });
 
-test("exact read-only commands use validated existing tools during Gemini outage", async () => {
+test("exact read-only commands are selected and validated without Gemini", async () => {
   const server = createServer();
   const trace: string[] = [];
+  let geminiCalls = 0;
   const failGemini = async () => {
+    geminiCalls += 1;
     throw new GeminiTemporaryUnavailableError(3, 1_200, "unavailable");
   };
 
@@ -497,13 +671,155 @@ test("exact read-only commands use validated existing tools during Gemini outage
 
   assert.deepEqual(parsed, { tool: "products.getProducts", arguments: {} });
   assert.ok(server.listTools().some((tool) => tool.name === parsed.tool));
-  assert.ok(trace.some((item) => item.startsWith("fallback:intent-analysis:")));
+  assert.equal(geminiCalls, 0);
+  assert.ok(trace.includes("complete:intent-analysis"));
   assert.ok(trace.includes("complete:mcp-plan-preparation"));
+});
+
+test("deterministic pre-router resolves exact product listing and lookup without Gemini", async () => {
+  const { server } = createMockCommandServer(Permission.VIEWER, "client-1");
+  let geminiCalls = 0;
+  const noGemini = async () => {
+    geminiCalls += 1;
+    throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
+  };
+
+  const listing = await parseCommand("Show products", server, undefined, noGemini);
+  const lookup = await parseCommand("name of product P1001", server, undefined, noGemini);
+
+  assert.deepEqual(listing, { tool: "products.getProducts", arguments: {} });
+  assert.deepEqual(lookup, { tool: "products.getProduct", arguments: { productId: "P1001" } });
+  assert.equal(geminiCalls, 0);
+});
+
+test("deterministic pre-router validates zero-stock update with the registered stock schema", async () => {
+  const { server } = createMockCommandServer(Permission.MANAGER, "client-1");
+  let geminiCalls = 0;
+  const noGemini = async () => {
+    geminiCalls += 1;
+    throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
+  };
+
+  const parsed = await parseCommand(
+    "Set stock of SKU NIKE-AM90-BLK-9 to 0",
+    server,
+    undefined,
+    noGemini,
+  );
+
+  assert.deepEqual(parsed, {
+    tool: "products.updateStock",
+    arguments: { sku: "NIKE-AM90-BLK-9", stock: 0 },
+  });
+  assert.deepEqual(createUpdateStockTool().inputSchema.parse(parsed.arguments), {
+    sku: "NIKE-AM90-BLK-9",
+    stock: 0,
+  });
+  assert.equal(geminiCalls, 0);
+});
+
+test("malformed or unknown SKU commands cannot dispatch a stock update", async () => {
+  const { server, calls } = createMockCommandServer(Permission.MANAGER, "client-1");
+
+  await assert.rejects(
+    () => parseCommand(
+      "Set stock of SKU to 0",
+      server,
+      undefined,
+      async () => { throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable"); },
+    ),
+    GeminiTemporaryUnavailableError,
+  );
+
+  const parsed = await parseCommand(
+    "Set stock of SKU INVALID-SKU to 0",
+    server,
+    undefined,
+    async () => { throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable"); },
+  );
+  assert.ok(parsed.tool && parsed.arguments);
+  const result = await server.executeTool(parsed.tool, parsed.arguments);
+  assert.equal(result.success, false);
+  assert.equal(calls.includes("products.updateStock"), false);
+});
+
+test("deterministic stock command still requires an explicitly selected client", async () => {
+  const { server, calls } = createMockCommandServer(Permission.MANAGER);
+  const parsed = await parseCommand(
+    "Set stock of SKU NIKE-AM90-BLK-9 to 0",
+    server,
+    undefined,
+    async () => { throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable"); },
+  );
+  assert.ok(parsed.tool && parsed.arguments);
+
+  const result = await server.executeTool(parsed.tool, parsed.arguments);
+  assert.equal(result.success, false);
+  assert.match(result.message ?? "", /select a target client/i);
+  assert.deepEqual(calls, []);
+});
+
+test("deterministic router preserves stock tool authorization", async () => {
+  const { server, calls } = createMockCommandServer(Permission.VIEWER, "client-1");
+  const parsed = await parseCommand(
+    "Set stock of SKU NIKE-AM90-BLK-9 to 0",
+    server,
+    undefined,
+    async () => { throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable"); },
+  );
+
+  assert.equal(parsed.action, "unknown");
+  assert.match(parsed.unsupportedMessage ?? "", /not available to your account/i);
+  const result = await server.executeTool("products.updateStock", {
+    sku: "NIKE-AM90-BLK-9",
+    stock: 0,
+  });
+  assert.equal(result.success, false);
+  assert.equal(calls.includes("products.updateStock"), false);
+});
+
+test("UI background commands route only to registered UI tools and reject unsupported white", async () => {
+  const { server } = createMockCommandServer(Permission.VIEWER, "client-1");
+  let geminiCalls = 0;
+  const noGemini = async () => {
+    geminiCalls += 1;
+    throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
+  };
+
+  const unsupported = await parseCommand("Change background colour to white", server, undefined, noGemini);
+  const unsupportedFrontend = await parseCommand(
+    "Update the frontend background to white",
+    server,
+    undefined,
+    noGemini,
+  );
+  const supported = await parseCommand("Change background colour to paper", server, undefined, noGemini);
+
+  assert.equal(unsupported.action, "unknown");
+  assert.match(unsupported.unsupportedMessage ?? "", /background value is unsupported/i);
+  assert.equal(unsupportedFrontend.action, "unknown");
+  assert.match(unsupportedFrontend.unsupportedMessage ?? "", /background value is unsupported/i);
+  assert.deepEqual(supported, { tool: "ui.setBackground", arguments: { background: "paper" } });
+  assert.equal(geminiCalls, 0);
+});
+
+test("variant deletion is explicitly unsupported and never selects product deletion", async () => {
+  const { server } = createMockCommandServer(Permission.ADMIN, "client-1");
+  let geminiCalls = 0;
+  const noGemini = async () => {
+    geminiCalls += 1;
+    throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
+  };
+
+  const parsed = await parseCommand("Delete variant NIKE-AM90-BLK-9", server, undefined, noGemini);
+  assert.equal(parsed.action, "unknown");
+  assert.match(parsed.unsupportedMessage ?? "", /deleting a variant.*not supported/i);
+  assert.equal(geminiCalls, 0);
 });
 
 test("valid Gemini intent output passes registry permission and input validation", async () => {
   const parsed = await parseCommand(
-    "Show products",
+    "Summarize the products in our catalog",
     createServer(),
     undefined,
     async () => ({ success: true, text: JSON.stringify({ tool: "products.getProducts", arguments: {} }) }),
@@ -516,7 +832,7 @@ test("malformed and empty Gemini output fail MCP plan preparation safely", async
   for (const text of ["", "{not valid json"]) {
     const failedStages: string[] = [];
     await assert.rejects(
-      () => parseCommand("Show products", createServer(), {
+      () => parseCommand("Summarize the products in our catalog", createServer(), {
         onStageFailed: (stage) => failedStages.push(stage),
       }, async () => ({ success: true, text })),
       (error: unknown) => {
@@ -534,7 +850,7 @@ test("Gemini 404 remains a provider failure instead of becoming a successful unk
 
   await assert.rejects(
     () => parseCommand(
-      "show products",
+      "summarize the products in our catalog",
       server,
       undefined,
       async () => { throw providerError; },
@@ -551,7 +867,7 @@ test("Gemini 404 remains a provider failure instead of becoming a successful unk
 test("unsuccessful Gemini response fails intent analysis", async () => {
   const failedStages: string[] = [];
   await assert.rejects(
-    () => parseCommand("Show products", createServer(), {
+    () => parseCommand("Summarize the products in our catalog", createServer(), {
       onStageFailed: (stage) => failedStages.push(stage),
     }, async () => ({ success: false, text: "" })),
     GeminiIntentResponseError,
@@ -586,25 +902,128 @@ test("inventory summary fallback uses its existing registered tool", async () =>
 });
 
 test("ambiguous and destructive commands never use deterministic fallback", async () => {
-  const server = createServer();
-  const failures: Array<{ stage: string; error: string }> = [];
+  const server = createServer(Permission.VIEWER, "client-1");
+  const denied = await server.executeTool("products.deleteProduct", { productId: "P1001" });
+  assert.equal(denied.success, false);
+  assert.match(denied.message ?? "", /does not have permission/i);
+
+  const noDeleteTool = createMockDeleteServer(Permission.VIEWER, "client-1").server;
+  let geminiCalls = 0;
+  const parsed = await parseCommand(
+    "Delete product P1001",
+    noDeleteTool,
+    undefined,
+    async () => {
+      geminiCalls += 1;
+      throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
+    },
+  );
+  assert.equal(parsed.action, "unknown");
+  assert.match(parsed.unsupportedMessage ?? "", /not available to your account/i);
+  assert.equal(geminiCalls, 0);
+});
+
+test("deterministic router selects the registered delete tool and validates its actual schema", async () => {
+  const { server } = createMockDeleteServer(Permission.ADMIN, "client-1");
+  assert.ok(server.listTools().some((tool) => tool.name === "products.deleteProduct"));
+
+  const parsed = await parseCommand(
+    "Delete product P1003",
+    server,
+    undefined,
+    async () => { throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable"); },
+  );
+
+  assert.deepEqual(parsed, {
+    tool: "products.deleteProduct",
+    arguments: { productId: "P1003" },
+  });
+  assert.deepEqual(
+    createDeleteProductTool().inputSchema.parse(parsed.arguments),
+    { productId: "P1003" },
+  );
+});
+
+test("invalid product IDs do not produce a destructive fallback", async () => {
+  const { server } = createMockDeleteServer(Permission.ADMIN, "client-1");
+  const invalidId = "P".repeat(129);
+  let geminiCalls = 0;
+
+  const parsed = await parseCommand(
+    `Delete product ${invalidId}`,
+    server,
+    undefined,
+    async () => {
+      geminiCalls += 1;
+      throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
+    },
+  );
+  assert.equal(parsed.action, "unknown");
+  assert.match(parsed.unsupportedMessage ?? "", /arguments are invalid/i);
+  assert.equal(geminiCalls, 0);
+});
+
+test("delete fallback requires a selected client and never dispatches without one", async () => {
+  const { server, getDeleteRequests } = createMockDeleteServer(Permission.ADMIN);
+  const parsed = await parseCommand(
+    "Delete product P1003",
+    server,
+    undefined,
+    async () => { throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable"); },
+  );
+  if (!parsed.tool || !parsed.arguments) throw new Error("Expected a validated delete tool intent.");
+
+  const result = await server.executeTool(parsed.tool, parsed.arguments);
+  assert.equal(result.success, false);
+  assert.match(result.message ?? "", /select a target client/i);
+  assert.equal(getDeleteRequests(), 0);
+});
+
+test("delete fallback preserves role authorization and never dispatches for unauthorized users", async () => {
+  const { server, getDeleteRequests } = createMockDeleteServer(Permission.VIEWER, "client-1");
+
+  const parsed = await parseCommand(
+    "Delete product P1003",
+    server,
+    undefined,
+    async () => { throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable"); },
+  );
+  assert.equal(parsed.action, "unknown");
+  assert.match(parsed.unsupportedMessage ?? "", /not available to your account/i);
+  const result = await server.executeTool("products.deleteProduct", { productId: "P1003" });
+  assert.equal(result.success, false);
+  assert.match(result.message ?? "", /does not have permission/i);
+  assert.equal(getDeleteRequests(), 0);
+});
+
+test("delete fallback still requires the existing administrator approval workflow", async () => {
+  const { server, getDeleteRequests, getApprovalRequests } = createMockDeleteServer(Permission.ADMIN, "client-1");
+  const parsed = await parseCommand(
+    "Delete product P1003",
+    server,
+    undefined,
+    async () => { throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable"); },
+  );
+  if (!parsed.tool || !parsed.arguments) throw new Error("Expected a validated delete tool intent.");
+
+  const result = await server.executeTool(parsed.tool, parsed.arguments);
+  assert.equal(result.success, false);
+  assert.equal(result.outcome, "APPROVAL_REQUIRED");
+  assert.equal(getApprovalRequests(), 1);
+  assert.equal(getDeleteRequests(), 0);
+});
+
+test("unknown destructive requests never select an unrelated fallback tool", async () => {
+  const { server } = createMockDeleteServer(Permission.ADMIN, "client-1");
   const failGemini = async () => {
     throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
   };
 
-  await assert.rejects(
-    () => parseCommand("Delete product P1001", server, {
-      onStageFailed: (stage, error) => failures.push({ stage, error }),
-    }, failGemini),
-    GeminiTemporaryUnavailableError,
-  );
-  assert.equal(failures[0]?.stage, "intent-analysis");
-  assert.match(failures[0]?.error ?? "", /temporarily unavailable/i);
-  assert.match(failures[0]?.error ?? "", /3 attempts, 1\.0 seconds/);
-
-  const denied = await server.executeTool("products.deleteProduct", { productId: "P1001" });
-  assert.equal(denied.success, false);
-  assert.match(denied.message ?? "", /does not have permission/i);
+  for (const command of ["Delete all products", "Delete product P1003 P1004", "Delete customer C1003"]) {
+    const parsed = await parseCommand(command, server, undefined, failGemini);
+    assert.equal(parsed.action, "unknown");
+    assert.match(parsed.unsupportedMessage ?? "", /not supported by the registered product tools/i);
+  }
 });
 
 test("fallback phrases do not match broader or arbitrary requests", async () => {

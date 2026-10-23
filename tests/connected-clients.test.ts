@@ -9,14 +9,16 @@ import {
   updateConnectedClientSchema,
 } from "../validators/connected-client.validator";
 import {
+  createConnectedClient,
   listConnectedClients,
   toSafeConnectedClient,
   updateConnectedClient,
 } from "../services/connected-client.service";
 import { validateConnectedClientSelection } from "../services/mcp-connector.service";
+import { withAuthenticatedConnectedClient } from "../services/mcp-connector.service";
 import { connectedClientErrorResponse } from "../lib/connected-client-api-error";
 import { AuthenticationServiceError } from "../lib/errors";
-import { validateAndConsumeMfaChallenge } from "../lib/mfa";
+import { decryptSecret, encryptSecret, validateAndConsumeMfaChallenge } from "../lib/mfa";
 
 process.env.MFA_ENCRYPTION_KEY ??= "test-connected-client-encryption-key-32-bytes";
 
@@ -53,7 +55,7 @@ test("connected-client validator enforces slug and authConfig rules", () => {
   assert.equal(updateConnectedClientSchema.safeParse({ authType: "BEARER" }).success, false);
 });
 
-test("connected-client registration roles remain restricted to admins and managers", () => {
+test("connected-client management is restricted to company admins", () => {
   const actor = {
     id: "user-1",
     email: "admin@example.test",
@@ -62,13 +64,11 @@ test("connected-client registration roles remain restricted to admins and manage
   };
 
   assert.throws(
-    () => requireRole(actor, [UserRole.ADMIN, UserRole.MANAGER]),
+    () => requireRole(actor, [UserRole.ADMIN]),
     /forbidden/i,
   );
-  assert.doesNotThrow(() => requireRole(
-    { ...actor, role: UserRole.MANAGER },
-    [UserRole.ADMIN, UserRole.MANAGER],
-  ));
+  assert.throws(() => requireRole({ ...actor, role: UserRole.MANAGER }, [UserRole.ADMIN]), /forbidden/i);
+  assert.doesNotThrow(() => requireRole({ ...actor, role: UserRole.ADMIN }, [UserRole.ADMIN]));
 });
 
 test("active connected-client listing filters by company and status", async () => {
@@ -212,6 +212,184 @@ test("safe connected-client responses never expose encrypted authConfig", () => 
   } as never);
   assert.equal("authConfig" in safe, false);
   assert.equal(safe.hasCredentials, true);
+});
+
+test("saving a tested Inventory Backend encrypts credentials and returns no secrets", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalBaseUrl = process.env.INVENTORY_API_BASE_URL;
+  Reflect.set(process.env, "NODE_ENV", "development");
+  process.env.INVENTORY_API_BASE_URL = "http://localhost:5000";
+  let stored: Record<string, unknown> | undefined;
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  const db = {
+    connectedClient: {
+      findFirst: async () => null,
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        stored = data;
+        return {
+          id: "saved-client",
+          ...data,
+          description: null,
+          createdAt: new Date("2026-01-01"),
+          updatedAt: new Date("2026-01-01"),
+        };
+      },
+    },
+    activityLog: { create: async () => undefined },
+  };
+
+  try {
+    globalThis.fetch = async (input, init) => {
+      requests.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get("Authorization"),
+      });
+      return String(input).endsWith("/auth/login")
+        ? Response.json({ token: "temporary-backend-token", role: "admin", username: "external-admin" })
+        : Response.json([]);
+    };
+    const safe = await createConnectedClient({
+      name: "Inventory Backend",
+      baseUrl: "http://localhost:5000",
+      authType: "INVENTORY_LOGIN",
+      authConfig: { username: "external-admin", password: "external-password" },
+    }, { id: "admin-1", companyId: "company-a" }, db as never);
+
+    assert.equal(stored?.companyId, "company-a");
+    assert.equal(stored?.lastConnectionTestStatus, "CONNECTED");
+    assert.equal(typeof stored?.lastConnectionTestAt, "object");
+    assert.equal(typeof stored?.authConfig, "string");
+    assert.equal(String(stored?.authConfig).includes("external-password"), false);
+    assert.deepEqual(JSON.parse(decryptSecret(String(stored?.authConfig))), {
+      username: "external-admin",
+      password: "external-password",
+    });
+    assert.equal("authConfig" in safe, false);
+    assert.equal(JSON.stringify(safe).includes("external-password"), false);
+    assert.deepEqual(requests.map(({ url }) => new URL(url).pathname), ["/auth/login", "/products"]);
+    assert.equal(requests[1]?.authorization, "Bearer temporary-backend-token");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalNodeEnv === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
+    else Reflect.set(process.env, "NODE_ENV", originalNodeEnv);
+    if (originalBaseUrl === undefined) delete process.env.INVENTORY_API_BASE_URL;
+    else process.env.INVENTORY_API_BASE_URL = originalBaseUrl;
+  }
+});
+
+test("successful Inventory authentication followed by a persistence failure reports unsaved state", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalBaseUrl = process.env.INVENTORY_API_BASE_URL;
+  Reflect.set(process.env, "NODE_ENV", "development");
+  process.env.INVENTORY_API_BASE_URL = "http://localhost:5000";
+  const requests: string[] = [];
+  let auditLogWritten = false;
+  const persistenceError = Object.assign(new Error("database detail must not be returned"), {
+    code: "P2022",
+    meta: { modelName: "ConnectedClient", column: "ConnectedClient.lastConnectionTestStatus" },
+  });
+  const db = {
+    connectedClient: {
+      findFirst: async () => null,
+      create: async () => { throw persistenceError; },
+    },
+    activityLog: {
+      create: async () => { auditLogWritten = true; },
+    },
+  };
+
+  try {
+    globalThis.fetch = async (input) => {
+      requests.push(String(input));
+      return String(input).endsWith("/auth/login")
+        ? Response.json({ token: "temporary-backend-token", role: "admin", username: "external-admin" })
+        : Response.json([]);
+    };
+    await assert.rejects(
+      () => createConnectedClient({
+        name: "Inventory Backend",
+        baseUrl: "http://localhost:5000",
+        authType: "INVENTORY_LOGIN",
+        authConfig: { username: "external-admin", password: "external-password" },
+      }, { id: "admin-1", companyId: "company-a" }, db as never),
+      (error: unknown) => error instanceof AuthenticationServiceError &&
+        error.message === "Connected client could not be saved. Please try again." &&
+        error.cause === persistenceError,
+    );
+
+    assert.deepEqual(requests.map((url) => new URL(url).pathname), ["/auth/login", "/products"]);
+    assert.equal(auditLogWritten, false);
+    const response = connectedClientErrorResponse(
+      new AuthenticationServiceError("Connected client could not be saved. Please try again.", persistenceError),
+    );
+    const body = await response.json() as { success: boolean; message: string };
+    assert.equal(response.status, 503);
+    assert.equal(body.success, false);
+    assert.equal(body.message, "Connected client could not be saved. Please try again.");
+    assert.equal(JSON.stringify(body).includes("database detail"), false);
+    assert.equal(JSON.stringify(body).includes("external-password"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalNodeEnv === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
+    else Reflect.set(process.env, "NODE_ENV", originalNodeEnv);
+    if (originalBaseUrl === undefined) delete process.env.INVENTORY_API_BASE_URL;
+    else process.env.INVENTORY_API_BASE_URL = originalBaseUrl;
+  }
+});
+
+test("selected saved Inventory Backend authenticates and retrieves products from its persisted config", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalBaseUrl = process.env.INVENTORY_API_BASE_URL;
+  Reflect.set(process.env, "NODE_ENV", "development");
+  process.env.INVENTORY_API_BASE_URL = "http://localhost:5000";
+  const requests: string[] = [];
+  const product = {
+    productId: "REAL-PRODUCT-1",
+    name: "Persisted Product",
+    brand: "Brand",
+    category: "General",
+    description: "From backend",
+    status: "active",
+    variants: [{ sku: "SKU-1", color: "blue", size: "M", price: 20, stock: 4 }],
+  };
+
+  try {
+    const { getProducts } = await import("../services/inventory-api.service");
+    globalThis.fetch = async (input) => {
+      requests.push(String(input));
+      return String(input).endsWith("/auth/login")
+        ? Response.json({ token: "fresh-jwt", role: "admin", username: "external-admin" })
+        : Response.json([product]);
+    };
+    const connectedClient = {
+      findFirst: async ({ where }: { where: { id: string; companyId: string; status: string } }) => {
+        assert.deepEqual(where, { id: "client-a", companyId: "company-a", status: "ACTIVE" });
+        return {
+          baseUrl: "http://localhost:5000",
+          authType: "INVENTORY_LOGIN",
+          authConfig: encryptSecret(JSON.stringify({ username: "external-admin", password: "external-password" })),
+        };
+      },
+    };
+    const prisma = { connectedClient } as never;
+    const products = await withAuthenticatedConnectedClient(
+      { companyId: "company-a", connectedClientId: "client-a", prisma } as never,
+      () => getProducts(),
+      prisma,
+    );
+
+    assert.equal(products[0]?.productId, "REAL-PRODUCT-1");
+    assert.deepEqual(requests.map((url) => new URL(url).pathname), ["/auth/login", "/products"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalNodeEnv === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
+    else Reflect.set(process.env, "NODE_ENV", originalNodeEnv);
+    if (originalBaseUrl === undefined) delete process.env.INVENTORY_API_BASE_URL;
+    else process.env.INVENTORY_API_BASE_URL = originalBaseUrl;
+  }
 });
 
 test("switching authType to NONE clears existing encrypted credentials", async () => {

@@ -12,15 +12,21 @@ export interface ExecutionStage {
   id: ExecutionStageId;
   label: string;
   status: ExecutionStageStatus;
+  requestId?: string;
+  toolName?: string;
+  startedAt?: string;
+  endedAt?: string;
   durationMs?: number;
+  httpStatus?: number;
+  errorCategory?: string;
   error?: string;
   note?: string;
 }
 
 export interface ExternalRequestTraceHooks {
   onRequestStart: () => void;
-  onRequestComplete: () => void;
-  onRequestFailed: (error: string) => void;
+  onRequestComplete: (httpStatus?: number) => void;
+  onRequestFailed: (error: string, httpStatus?: number, errorCategory?: string) => void;
 }
 
 export const EXECUTION_STAGE_DEFINITIONS: ReadonlyArray<Pick<ExecutionStage, "id" | "label">> = [

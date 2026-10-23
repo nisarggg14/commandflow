@@ -1,23 +1,23 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getExternalRequestTrace } from "@/services/external-request-trace";
+import { validateInventoryApiBaseUrl } from "@/services/inventory-api.service";
 
-import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { assertSafeOutboundUrl, isConfiguredDevelopmentLoopbackUrl } from "@/lib/ssrf";
 
 export interface OrderApiConnection {
   baseUrl: string;
-  authType: "NONE" | "BEARER" | "API_KEY" | "BASIC";
+  authType: "NONE" | "BEARER" | "API_KEY" | "BASIC" | "INVENTORY_LOGIN";
   authConfig: Record<string, string>;
   timeoutMs?: number;
 }
 
 const storage = new AsyncLocalStorage<OrderApiConnection>();
-const fallbackBaseUrl = (process.env.ORDER_API_BASE_URL ?? "http://localhost:5001").replace(/\/+$/, "");
 
 export function runWithOrderApiConnection<T>(connection: OrderApiConnection, operation: () => Promise<T>) {
   return storage.run(connection, operation);
 }
 
-function auth(headers: Headers, connection: OrderApiConnection) {
+async function auth(headers: Headers, connection: OrderApiConnection) {
   if (connection.authType === "BEARER") {
     if (!connection.authConfig.token) throw new Error("Connected client bearer credentials are unavailable.");
     headers.set("Authorization", `Bearer ${connection.authConfig.token}`);
@@ -31,16 +31,41 @@ function auth(headers: Headers, connection: OrderApiConnection) {
   } else if (connection.authType === "BASIC") {
     if (!connection.authConfig.username || !connection.authConfig.password) throw new Error("Connected client basic credentials are unavailable.");
     headers.set("Authorization", `Basic ${Buffer.from(`${connection.authConfig.username}:${connection.authConfig.password}`).toString("base64")}`);
+  } else if (connection.authType === "INVENTORY_LOGIN") {
+    const baseUrl = await validateInventoryApiBaseUrl(connection.baseUrl);
+    const response = await fetch(new URL("/auth/login", `${baseUrl}/`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: connection.authConfig.username,
+        password: connection.authConfig.password,
+      }),
+      signal: AbortSignal.timeout(connection.timeoutMs ?? 10_000),
+      redirect: "manual",
+    });
+    if (response.status === 401 || response.status === 403) throw new Error("Inventory Backend rejected the supplied username or password.");
+    if (!response.ok) throw new Error("Inventory Backend authentication failed.");
+    const payload: unknown = await response.json().catch(() => null);
+    if (!payload || typeof payload !== "object" || !("token" in payload) || typeof payload.token !== "string") {
+      throw new Error("Inventory Backend returned an invalid login response.");
+    }
+    headers.set("Authorization", `Bearer ${payload.token}`);
   }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!path.startsWith("/") || path.includes("..") || path.startsWith("//")) throw new Error("Order request path is not allowed.");
-  const connection = storage.getStore() ?? { baseUrl: fallbackBaseUrl, authType: "NONE" as const, authConfig: {}, timeoutMs: 10000 };
-  const url = await assertSafeOutboundUrl(new URL(path.slice(1), `${connection.baseUrl.replace(/\/+$/, "")}/`).toString());
+  const connection = storage.getStore();
+  if (!connection) throw new Error("Select a target client before running this tool.");
+  const rawUrl = new URL(path.slice(1), `${connection.baseUrl.replace(/\/+$/, "")}/`).toString();
+  const url = isConfiguredDevelopmentLoopbackUrl(
+    rawUrl,
+    process.env.INVENTORY_API_BASE_URL ?? "",
+    process.env.NODE_ENV,
+  ) ? new URL(rawUrl) : await assertSafeOutboundUrl(rawUrl);
   const headers = new Headers(init.headers);
   if (init.body) headers.set("Content-Type", "application/json");
-  auth(headers, connection);
+  await auth(headers, connection);
   let response: Response;
   const requestTrace = storage.getStore() ? getExternalRequestTrace() : undefined;
   requestTrace?.onRequestStart();

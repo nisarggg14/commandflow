@@ -7,6 +7,7 @@ export default function RegisterPage() {
   const router = useRouter()
   const [form, setForm] = useState({
     companyName: '',
+    invitationCode: '',
     name: '',
     email: '',
     password: '',
@@ -54,7 +55,7 @@ export default function RegisterPage() {
             <span className="text-xl font-bold text-accent-foreground">⚡</span>
           </div>
           <h1 className="text-4xl font-bold text-foreground tracking-tight">Create your CommandFlow account</h1>
-          <p className="text-muted-foreground text-sm">Set up your company workspace and start issuing commands.</p>
+          <p className="text-muted-foreground text-sm">Create a company workspace or join one with an invitation code.</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5">
@@ -66,7 +67,7 @@ export default function RegisterPage() {
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2 md:col-span-2">
-              <label htmlFor="companyName" className="block text-sm font-medium text-foreground">Company Name</label>
+              <label htmlFor="companyName" className="block text-sm font-medium text-foreground">Company Name (new workspace)</label>
               <input
                 id="companyName"
                 type="text"
@@ -74,7 +75,22 @@ export default function RegisterPage() {
                 onChange={(e) => handleChange('companyName', e.target.value)}
                 className="w-full rounded-lg border border-border bg-card px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent"
                 disabled={isLoading}
+                required={!form.invitationCode.trim()}
               />
+            </div>
+
+            <div className="space-y-2 md:col-span-2">
+              <label htmlFor="invitationCode" className="block text-sm font-medium text-foreground">Company invitation code (existing workspace)</label>
+              <input
+                id="invitationCode"
+                type="text"
+                autoComplete="off"
+                value={form.invitationCode}
+                onChange={(e) => handleChange('invitationCode', e.target.value)}
+                className="w-full rounded-lg border border-border bg-card px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-accent"
+                disabled={isLoading}
+              />
+              <p className="text-xs text-muted-foreground">Ask your company administrator for a current invitation code. Joining assigns the regular User role.</p>
             </div>
 
             <div className="space-y-2">

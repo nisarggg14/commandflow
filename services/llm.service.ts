@@ -28,11 +28,26 @@ const MODEL = normalizeModelName(process.env.GEMINI_MODEL);
 export const GEMINI_QUOTA_MESSAGE = "AI service temporarily unavailable because the Gemini API quota has been exceeded. Please try again later.";
 export const GEMINI_TEMPORARY_UNAVAILABLE_MESSAGE = "Command understanding is temporarily unavailable. Please try again shortly.";
 
-const GEMINI_MAX_ATTEMPTS = 3;
-const GEMINI_MAX_ELAPSED_MS = 15_000;
-const GEMINI_REQUEST_TIMEOUT_MS = 4_000;
-const GEMINI_RETRY_BASE_DELAY_MS = 250;
-const GEMINI_RETRY_MAX_DELAY_MS = 2_500;
+function configuredInteger(name: string, fallback: number, minimum: number, maximum: number): number {
+  const configured = process.env[name]?.trim();
+  if (!configured) return fallback;
+
+  const value = Number(configured);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return value;
+}
+
+const GEMINI_MAX_ATTEMPTS = configuredInteger("GEMINI_MAX_ATTEMPTS", 3, 1, 5);
+const GEMINI_MAX_ELAPSED_MS = configuredInteger("GEMINI_MAX_ELAPSED_MS", 15_000, 1_000, 60_000);
+const GEMINI_REQUEST_TIMEOUT_MS = configuredInteger("GEMINI_REQUEST_TIMEOUT_MS", 4_000, 500, 30_000);
+const GEMINI_RETRY_BASE_DELAY_MS = configuredInteger("GEMINI_RETRY_BASE_DELAY_MS", 250, 0, 2_500);
+const GEMINI_RETRY_MAX_DELAY_MS = configuredInteger("GEMINI_RETRY_MAX_DELAY_MS", 2_500, 0, 10_000);
+
+if (GEMINI_MAX_ELAPSED_MS < GEMINI_REQUEST_TIMEOUT_MS) {
+  throw new Error("GEMINI_MAX_ELAPSED_MS must be at least GEMINI_REQUEST_TIMEOUT_MS.");
+}
 
 export type GeminiErrorCategory = "unavailable" | "rate_limited" | "network" | "permanent";
 
@@ -389,7 +404,18 @@ export async function retryGeminiRequest<T>(
 
     attempts += 1;
     try {
-      const result = await operation();
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([
+        operation(),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(
+            () => reject(new DOMException("Gemini request timed out.", "TimeoutError")),
+            requestTimeoutMs,
+          );
+        }),
+      ]).finally(() => {
+        if (timeout) clearTimeout(timeout);
+      });
       if (attempts > 1) {
         console.info("[llm] Gemini request recovered", {
           model,
@@ -456,21 +482,24 @@ interface GeminiInteractionRequest {
   };
 }
 
+interface GeminiRequestOptions {
+  timeout: number;
+  maxRetries: number;
+}
+
 interface GeminiClientFactory {
   (apiKey: string): {
     interactions: {
-      create(request: GeminiInteractionRequest): Promise<{ output_text?: string }>;
+      create(
+        request: GeminiInteractionRequest,
+        options: GeminiRequestOptions,
+      ): Promise<{ output_text?: string }>;
     };
   };
 }
 
 function createGeminiClient(apiKey: string): ReturnType<GeminiClientFactory> {
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      timeout: GEMINI_REQUEST_TIMEOUT_MS,
-    },
-  });
+  return new GoogleGenAI({ apiKey });
 }
 
 export function getGeminiConfigurationStatus() {
@@ -480,7 +509,11 @@ export function getGeminiConfigurationStatus() {
     endpoint: "https://generativelanguage.googleapis.com/v1beta/interactions",
     apiVersion: "v1beta",
     sdkRetries: 0,
+    maxAttempts: GEMINI_MAX_ATTEMPTS,
+    maxElapsedMs: GEMINI_MAX_ELAPSED_MS,
     requestTimeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
+    retryBaseDelayMs: GEMINI_RETRY_BASE_DELAY_MS,
+    retryMaxDelayMs: GEMINI_RETRY_MAX_DELAY_MS,
   } as const;
 }
 
@@ -509,6 +542,9 @@ export async function generateResponse(
         input: prompt,
         store: false,
         response_format: { type: "text", mime_type: "application/json" },
+      }, {
+        timeout: GEMINI_REQUEST_TIMEOUT_MS,
+        maxRetries: 0,
       }),
       { model: MODEL, sensitiveValues: [apiKey, prompt, ...sensitiveValues] },
     );

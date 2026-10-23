@@ -41,7 +41,7 @@ export function logServerError(
   requestId?: string,
 ): void {
   const record = error && typeof error === "object"
-    ? error as { name?: unknown; message?: unknown; stack?: unknown }
+    ? error as { name?: unknown; message?: unknown; stack?: unknown; category?: unknown; httpStatus?: unknown }
     : undefined;
   const cause = record && "cause" in record && record.cause && typeof record.cause === "object"
     ? record.cause as { name?: unknown; message?: unknown; stack?: unknown }
@@ -74,6 +74,12 @@ export function logServerError(
       : {}),
     ...(details && typeof details.status === "number"
       ? { providerStatus: details.status }
+      : {}),
+    ...(typeof record?.category === "string"
+      ? { errorCategory: record.category.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80) }
+      : {}),
+    ...(typeof record?.httpStatus === "number"
+      ? { httpStatus: record.httpStatus }
       : {}),
     ...(details && typeof details.providerCode === "string"
       ? { providerCode: redactDiagnosticText(details.providerCode, sensitiveValues) }

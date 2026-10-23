@@ -21,7 +21,9 @@ import {
 import { InMemoryToolRegistry } from "./registry";
 import { redactAuditText } from "@/lib/audit-redaction";
 import { withAuthenticatedConnectedClient } from "@/services/mcp-connector.service";
+import { InventoryApiError } from "@/services/inventory-api.service";
 import { logServerError } from "@/lib/server-error-logging";
+import { toolRequiresConnectedClient } from "./client-tool-policy";
 
 function collectSensitiveInputStrings(value: unknown, depth = 0): string[] {
   if (depth > 6 || value === null || value === undefined) return [];
@@ -85,6 +87,24 @@ export class CommandFlowMCPServer {
 
       if (!tool) {
         throw new ToolNotFoundError(`No tool registered with the name ${name}.`);
+      }
+
+      if (toolRequiresConnectedClient(tool.name)) {
+        const connectedClientId = this.context.connectedClientId;
+        if (!connectedClientId) {
+          throw new ValidationError("Select a target client before running this tool.");
+        }
+        const activeClient = await this.context.prisma.connectedClient.findFirst({
+          where: {
+            id: connectedClientId,
+            companyId: this.context.companyId,
+            status: "ACTIVE",
+          },
+          select: { id: true },
+        });
+        if (!activeClient) {
+          throw new ValidationError("Selected connected client is unavailable.");
+        }
       }
 
       riskLevel = tool.riskLevel ?? "LOW";
@@ -182,7 +202,9 @@ export class CommandFlowMCPServer {
       executionStarted = true;
       traceHooks?.onStageStart?.("tool-execution");
 
-      const data = await this.withConnectedClient(async () => tool.execute(parsedInput, this.context));
+      const data = toolRequiresConnectedClient(tool.name)
+        ? await this.withConnectedClient(async () => tool.execute(parsedInput, this.context))
+        : await tool.execute(parsedInput, this.context);
       traceHooks?.onStageComplete?.("tool-execution");
       const duration = Date.now() - startedAt;
 
@@ -230,6 +252,8 @@ export class CommandFlowMCPServer {
         ? internalMessage
         : error instanceof PermissionDeniedError || error instanceof ValidationError || error instanceof ToolNotFoundError
           ? internalMessage
+          : error instanceof InventoryApiError
+            ? error.message
           : "Tool execution failed. Please try again.";
 
       if (approvalId && executionStarted) await markApprovalFailed(this.context.prisma, approvalId, this.context.companyId);

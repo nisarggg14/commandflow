@@ -12,6 +12,29 @@ export const CLIENT_TOOL_NAMES = [
   "orders.getOrders", "orders.updateOrderStatus", "orders.cancelOrder",
 ] as const;
 
+export const CONNECTED_CLIENT_REQUIRED_TOOL_NAMES = [
+  "products.getProducts",
+  "products.getProduct",
+  "products.createProduct",
+  "products.searchProducts",
+  "products.updateProduct",
+  "products.bulkUpdateStatus",
+  "products.updateStock",
+  "products.adjustPrice",
+  "products.deleteProduct",
+  "analytics.inventorySummary",
+  "analytics.lowStockReport",
+  "orders.getOrders",
+  "orders.updateOrderStatus",
+  "orders.cancelOrder",
+] as const;
+
+const connectedClientRequiredTools = new Set<string>(CONNECTED_CLIENT_REQUIRED_TOOL_NAMES);
+
+export function toolRequiresConnectedClient(toolName: string): boolean {
+  return connectedClientRequiredTools.has(toolName);
+}
+
 export const clientToolNameSchema = z.enum(CLIENT_TOOL_NAMES);
 
 export function normalizeEnabledToolNames(value: unknown): string[] | undefined {

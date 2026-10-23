@@ -13,6 +13,7 @@ export interface ParsedCommand {
   tool?: string;
   arguments?: Record<string, unknown>;
   action?: "unknown";
+  unsupportedMessage?: string;
 }
 
 export interface CommandParseTraceHooks {
@@ -109,6 +110,15 @@ export async function parseCommand(
   traceHooks?: CommandParseTraceHooks,
   generate: typeof generateResponse = generateResponse,
 ): Promise<ParsedCommand> {
+  traceHooks?.onStageStart?.("intent-analysis");
+  const routed = deterministicPreRouter(message, server);
+  if (routed) {
+    traceHooks?.onStageComplete?.("intent-analysis");
+    traceHooks?.onStageStart?.("mcp-plan-preparation");
+    traceHooks?.onStageComplete?.("mcp-plan-preparation");
+    return routed;
+  }
+
   const tools = server.listTools();
 
   const toolPrompt = tools
@@ -149,24 +159,11 @@ User request:
 ${message}
 `;
 
-  traceHooks?.onStageStart?.("intent-analysis");
   let llmResponse;
   try {
     llmResponse = await generate(prompt, [message]);
   } catch (error) {
     if (error instanceof GeminiTemporaryUnavailableError) {
-      const fallback = deterministicFallback(message, server);
-      if (fallback) {
-        traceHooks?.onStageFallback?.(
-          "intent-analysis",
-          "Gemini unavailable; a validated read-only fallback was selected.",
-        );
-        traceHooks?.onStageComplete?.("intent-analysis");
-        traceHooks?.onStageStart?.("mcp-plan-preparation");
-        traceHooks?.onStageComplete?.("mcp-plan-preparation");
-        return fallback;
-      }
-
       traceHooks?.onStageFailed?.("intent-analysis", error.message);
       throw error;
     }
@@ -267,13 +264,13 @@ function validateIntentResponse(raw: string, server: CommandFlowMCPServer): Pars
   return { tool: payload.tool, arguments: validatedArguments };
 }
 
-const DETERMINISTIC_READ_COMMANDS: ReadonlyArray<{
+const DETERMINISTIC_COMMANDS: ReadonlyArray<{
   phrases: readonly string[];
   tool: string;
   arguments: Record<string, unknown>;
 }> = [
   {
-    phrases: ["show products", "list products"],
+    phrases: ["show products", "list products", "show all products", "list all products"],
     tool: "products.getProducts",
     arguments: {},
   },
@@ -284,21 +281,96 @@ const DETERMINISTIC_READ_COMMANDS: ReadonlyArray<{
   },
 ];
 
-function deterministicFallback(message: string, server: CommandFlowMCPServer): ParsedCommand | undefined {
-  const normalized = message
+function deterministicPreRouter(message: string, server: CommandFlowMCPServer): ParsedCommand | undefined {
+  const normalizedCommand = message
     .normalize("NFKC")
     .trim()
-    .toLowerCase()
     .replace(/[.!?]+$/, "")
     .replace(/\s+/g, " ");
-  const match = DETERMINISTIC_READ_COMMANDS.find((candidate) => candidate.phrases.includes(normalized));
-  if (!match || !server.listTools().some((tool) => tool.name === match.tool)) return undefined;
+  const normalized = normalizedCommand.toLowerCase();
+  const deleteProductMatch = normalizedCommand.match(/^delete product (\S+)$/i);
+  const getProductMatch = normalizedCommand.match(
+    /^(?:what is the )?name of product (\S+)$/i,
+  ) ?? normalizedCommand.match(/^(?:show|get|find|lookup) product (\S+)$/i);
+  const stockUpdateMatch = normalizedCommand.match(
+    /^(?:set|update) stock of sku\s+(\S+)\s+to\s+(\d+)$/i,
+  );
+  const candidate = DETERMINISTIC_COMMANDS.find((item) => item.phrases.includes(normalized))
+    ?? (deleteProductMatch
+      ? { tool: "products.deleteProduct", arguments: { productId: deleteProductMatch[1] } }
+      : undefined)
+    ?? (getProductMatch
+      ? { tool: "products.getProduct", arguments: { productId: getProductMatch[1] } }
+      : undefined)
+    ?? (stockUpdateMatch
+      ? {
+        tool: "products.updateStock",
+        arguments: { sku: stockUpdateMatch[1], stock: Number(stockUpdateMatch[2]) },
+      }
+      : undefined);
 
-  try {
-    const argumentsObject = { ...match.arguments };
-    server.validateToolInput(match.tool, argumentsObject);
-    return { tool: match.tool, arguments: argumentsObject };
-  } catch {
-    return undefined;
+  if (candidate) {
+    if (!server.listTools().some((tool) => tool.name === candidate.tool)) {
+      return {
+        action: "unknown",
+        unsupportedMessage: "This command is not available to your account.",
+      };
+    }
+
+    try {
+      const argumentsObject = server.validateToolInput(candidate.tool, { ...candidate.arguments });
+      if (isPlainObject(argumentsObject)) return { tool: candidate.tool, arguments: argumentsObject };
+    } catch {
+      return {
+        action: "unknown",
+        unsupportedMessage: "The command arguments are invalid for the requested operation.",
+      };
+    }
+    return {
+      action: "unknown",
+      unsupportedMessage: "The command arguments are invalid for the requested operation.",
+    };
   }
+
+  if (/^delete\b/i.test(normalizedCommand)) {
+    return {
+      action: "unknown",
+      unsupportedMessage: "Deleting a variant or other item is not supported by the registered product tools.",
+    };
+  }
+
+  const isUiModificationRequest = /^(?:change|set|update)\b/i.test(normalizedCommand)
+    && /\b(?:background|theme|colour|color|frontend|interface)\b/i.test(normalizedCommand);
+  const backgroundMatch = normalizedCommand.match(
+    /^(?:change|set|update)\s+(?:the\s+)?(?:(frontend)\s+)?background(?:\s+(?:colour|color))?\s+to\s+(.+)$/i,
+  );
+  if (backgroundMatch) {
+    const toolName = backgroundMatch[1] ? "frontend.updateBackground" : "ui.setBackground";
+    if (!server.listTools().some((tool) => tool.name === toolName)) {
+      return { action: "unknown", unsupportedMessage: "Background changes are not available to your account." };
+    }
+    const background = backgroundMatch[2].trim().toLowerCase();
+    try {
+      const argumentsObject = server.validateToolInput(toolName, { background });
+      if (isPlainObject(argumentsObject)) return { tool: toolName, arguments: argumentsObject };
+    } catch {
+      return {
+        action: "unknown",
+        unsupportedMessage: "That background value is unsupported by the registered CommandFlow background tools.",
+      };
+    }
+    return {
+      action: "unknown",
+      unsupportedMessage: "That background value is unsupported by the registered CommandFlow background tools.",
+    };
+  }
+
+  if (isUiModificationRequest) {
+    return {
+      action: "unknown",
+      unsupportedMessage: "This UI modification is not supported by the registered CommandFlow tools.",
+    };
+  }
+
+  return undefined;
 }

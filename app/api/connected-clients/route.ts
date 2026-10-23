@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await authenticate(req);
-    requireRole(authUser, [UserRole.ADMIN, UserRole.MANAGER]);
+    requireRole(authUser, [UserRole.ADMIN]);
     return NextResponse.json({ success: true, connectedClient: await createConnectedClient(await req.json(), { id: authUser.id, companyId: authUser.companyId }) }, { status: 201 });
   } catch (error) { return connectedClientErrorResponse(error); }
 }

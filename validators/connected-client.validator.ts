@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { clientToolNameSchema } from "@/mcp/client-tool-policy";
 
-export const connectedClientAuthTypeEnum = z.enum(["NONE", "BEARER", "API_KEY", "BASIC"]);
+export const connectedClientAuthTypeEnum = z.enum(["NONE", "BEARER", "API_KEY", "BASIC", "INVENTORY_LOGIN"]);
 export const connectedClientStatusEnum = z.enum(["ACTIVE", "INACTIVE"]);
 
 const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -32,6 +32,10 @@ export const connectedClientBaseUrlSchema = z.string()
   });
 
 export const connectedClientAuthConfigSchema = z.record(z.string(), z.string().max(2000)).optional();
+export const inventoryLoginCredentialsSchema = z.object({
+  username: z.string().trim().min(1).max(200),
+  password: z.string().min(1).max(2000),
+});
 
 function requireAuthConfigForAuthType(
   data: { authType?: string; authConfig?: Record<string, string>; baseUrl?: string },
@@ -45,12 +49,25 @@ function requireAuthConfigForAuthType(
     });
   }
 
+  if (data.authType === "INVENTORY_LOGIN") {
+    if (!data.authConfig?.username?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Inventory Backend username is required.", path: ["authConfig", "username"] });
+    }
+    if (!data.authConfig?.password) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Inventory Backend password is required.", path: ["authConfig", "password"] });
+    }
+  }
+
   if (data.authType && data.authType !== "NONE" && data.baseUrl) {
     try {
-      if (new URL(data.baseUrl).protocol !== "https:") {
+      const url = new URL(data.baseUrl);
+      const configuredDevLoopback = process.env.NODE_ENV === "development"
+        && (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]")
+        && url.origin === new URL(process.env.INVENTORY_API_BASE_URL ?? "http://localhost:5000").origin;
+      if (url.protocol !== "https:" && !configuredDevLoopback) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Authenticated connected clients must use HTTPS.",
+          message: "Authenticated connected clients must use HTTPS except for the configured development loopback service.",
           path: ["baseUrl"],
         });
       }

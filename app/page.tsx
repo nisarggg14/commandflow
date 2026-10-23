@@ -183,6 +183,10 @@ export default function Page() {
         : []
       setConnectedClients(clients)
       setConnectedClientsError('')
+      const savedSelection = window.localStorage.getItem(`commandflow:selected-client:${data.user.company?.id ?? ''}`)
+      if (savedSelection && clients.some((client) => client.id === savedSelection)) {
+        setActiveConnectedClientId(savedSelection)
+      }
     }
 
     void loadUser()
@@ -223,6 +227,11 @@ export default function Page() {
 
   const handleConnectedClientChange = (clientId?: string) => {
     setActiveConnectedClientId(clientId)
+    if (authUser?.company?.id) {
+      const key = `commandflow:selected-client:${authUser.company.id}`
+      if (clientId) window.localStorage.setItem(key, clientId)
+      else window.localStorage.removeItem(key)
+    }
     setConversations((prev) => prev.map((conversation) => (
       conversation.id === activeConversationId
         ? { ...conversation, connectedClientId: clientId ?? null }
@@ -321,10 +330,27 @@ export default function Page() {
           return
         }
 
+        const failureMessage = data.message || 'The command could not be completed.'
+        const requestId = typeof data.requestId === 'string'
+          ? data.requestId
+          : res.headers.get('X-Request-ID')
+        const failureContent = Array.isArray(data.execution?.stages)
+          ? JSON.stringify({
+              type: 'execution',
+              status: 'FAILED',
+              toolName: null,
+              executionTimeMs: Number(res.headers.get('X-Request-Duration-Ms')) || undefined,
+              errors: [failureMessage],
+              message: requestId ? `${failureMessage} Request ID: ${requestId}` : failureMessage,
+              stages: data.execution.stages,
+            })
+          : requestId && res.status >= 500
+            ? `${failureMessage} (Request ID: ${requestId})`
+            : failureMessage
         const errorMessage: Message = {
           id: createClientId(),
           role: 'assistant',
-          content: data.message || 'The command could not be completed.',
+          content: failureContent,
         }
 
         setConversations((prev) =>
@@ -454,6 +480,11 @@ export default function Page() {
         clients={connectedClients}
         clientsError={connectedClientsError}
         selectedClientId={activeConnectedClientId}
+        userRole={authUser?.role}
+        onClientRegistered={(client) => {
+          setConnectedClients((previous) => [client, ...previous.filter((item) => item.id !== client.id)])
+          handleConnectedClientChange(client.id)
+        }}
         onClientChange={handleConnectedClientChange}
       />
 

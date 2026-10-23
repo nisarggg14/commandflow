@@ -12,10 +12,20 @@ import { chatRequestSchema } from "@/validators/chat.validator";
 
 export async function POST(req: NextRequest) {
   const requestId = randomUUID();
-  const respond = (body: unknown, init?: ResponseInit) => {
-    const response = NextResponse.json(body, init);
+  const requestStartedAt = Date.now();
+  const addRequestMetadata = (response: NextResponse) => {
+    const durationMs = Date.now() - requestStartedAt;
     response.headers.set("X-Request-ID", requestId);
+    response.headers.set("X-Request-Duration-Ms", String(durationMs));
+    console.info("[api.chat] request completed", {
+      requestId,
+      durationMs,
+      status: response.status,
+    });
     return response;
+  };
+  const respond = (body: unknown, init?: ResponseInit) => {
+    return addRequestMetadata(NextResponse.json(body, init));
   };
   console.info("[api.chat] request received", { requestId });
   const sensitiveRequestValues = [
@@ -45,11 +55,7 @@ export async function POST(req: NextRequest) {
       userId: authUser.id,
       companyId: authUser.companyId,
       mfaChallengeToken: typeof body.mfaChallengeToken === "string" ? body.mfaChallengeToken : undefined,
-      connectedClientId: body.connectedClientId === null
-        ? null
-        : typeof body.connectedClientId === "string"
-          ? body.connectedClientId
-          : undefined,
+      connectedClientId: body.connectedClientId,
       requestId,
     });
 
@@ -86,10 +92,9 @@ export async function POST(req: NextRequest) {
       return respond({ success: false, message: error.message }, { status: 404 });
     }
 
-    const serviceErrorResponse = chatServiceErrorResponse(error);
+    const serviceErrorResponse = chatServiceErrorResponse(error, requestId);
     if (serviceErrorResponse) {
-      serviceErrorResponse.headers.set("X-Request-ID", requestId);
-      return serviceErrorResponse;
+      return addRequestMetadata(serviceErrorResponse);
     }
 
     return respond(

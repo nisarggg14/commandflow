@@ -53,6 +53,27 @@ test("Gemini provider failures map to consistent upstream HTTP responses", async
   assert.equal(rateLimitedResponse.status, 429);
 });
 
+test("Gemini request failures retain the skipped execution trace", async () => {
+  const error = Object.assign(
+    new GeminiTemporaryUnavailableError(1, 4_000, "network"),
+    {
+      executionTrace: [{
+        id: "client-api-request",
+        label: "Client API Request",
+        status: "skipped",
+        requestId: "request-123",
+        note: "Skipped because intent analysis failed.",
+      }],
+    },
+  );
+  const response = chatServiceErrorResponse(error);
+  assert.ok(response);
+  assert.equal(response.status, 503);
+  const body = await response.json();
+  assert.equal(body.execution.stages[0].status, "skipped");
+  assert.equal(body.execution.stages[0].requestId, "request-123");
+});
+
 test("server diagnostics include error details while redacting credentials and request text", () => {
   const originalConsoleError = console.error;
   const logged: unknown[][] = [];

@@ -6,8 +6,6 @@ import { runWithInventoryApiConnection, type InventoryApiConnection } from "@/se
 import { runWithOrderApiConnection } from "@/services/order-api.service";
 import type { MCPContext } from "@/mcp/types";
 
-import { assertSafeOutboundUrl } from "@/lib/ssrf";
-
 const CONNECTOR_TIMEOUT_MS = 10_000;
 
 export async function validateConnectedClientSelection(
@@ -78,11 +76,14 @@ async function buildConnection(client: {
     throw new Error("Connected client base URL is not allowed.");
   }
 
-  if (client.authType !== "NONE" && client.authType !== "BEARER" && client.authType !== "API_KEY" && client.authType !== "BASIC") {
+  if (client.authType !== "NONE" && client.authType !== "BEARER" && client.authType !== "API_KEY" && client.authType !== "BASIC" && client.authType !== "INVENTORY_LOGIN") {
     throw new Error("Connected client authentication type is not supported.");
   }
 
-  if (client.authType !== "NONE" && parsedUrl.protocol !== "https:") {
+  const isConfiguredDevelopmentLoopback = process.env.NODE_ENV === "development"
+    && parsedUrl.origin === new URL(process.env.INVENTORY_API_BASE_URL ?? "").origin
+    && ["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsedUrl.hostname);
+  if (client.authType !== "NONE" && parsedUrl.protocol !== "https:" && !isConfiguredDevelopmentLoopback) {
     throw new Error("Authenticated connected clients must use HTTPS.");
   }
 
@@ -99,7 +100,9 @@ export async function withAuthenticatedConnectedClient<T>(
   operation: () => Promise<T>,
   db: PrismaClient = context.prisma
 ): Promise<T> {
-  if (!context.connectedClientId) return operation();
+  if (!context.connectedClientId) {
+    throw new NotFoundError("Select a target client before running this tool.");
+  }
 
   const client = await db.connectedClient.findFirst({
     where: {

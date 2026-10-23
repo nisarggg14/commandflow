@@ -8,17 +8,39 @@ import {
 
 type InventoryRole = "admin" | "manager" | "viewer";
 
-export interface InventoryApiConnection {
-  baseUrl: string;
-  authType: "NONE" | "BEARER" | "API_KEY" | "BASIC";
-  authConfig: Record<string, string>;
-  timeoutMs?: number;
+export type InventoryApiErrorCategory =
+  | "authentication"
+  | "permission"
+  | "not_found"
+  | "validation"
+  | "conflict"
+  | "http_error"
+  | "service_unavailable"
+  | "timeout"
+  | "dns"
+  | "connection_refused"
+  | "network"
+  | "malformed_response";
+
+export class InventoryApiError extends Error {
+  constructor(
+    readonly category: InventoryApiErrorCategory,
+    message: string,
+    readonly httpStatus?: number,
+    options?: ErrorOptions,
+    readonly stage = "unknown",
+    readonly elapsedMs?: number,
+  ) {
+    super(message, options);
+    this.name = "InventoryApiError";
+  }
 }
 
-interface InventoryAuthResponse {
-  token: string;
-  role: InventoryRole;
-  username: string;
+export interface InventoryApiConnection {
+  baseUrl: string;
+  authType: "NONE" | "BEARER" | "API_KEY" | "BASIC" | "INVENTORY_LOGIN";
+  authConfig: Record<string, string>;
+  timeoutMs?: number;
 }
 
 interface InventoryProductVariant {
@@ -38,6 +60,28 @@ export interface InventoryProduct {
   description: string;
   status: string;
   variants: InventoryProductVariant[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isInventoryProduct(value: unknown): value is InventoryProduct {
+  if (!isRecord(value) || !Array.isArray(value.variants)) return false;
+  const requiredStrings = ["productId", "name", "brand", "category", "description", "status"];
+  if (!requiredStrings.every((field) => typeof value[field] === "string")) return false;
+
+  return value.variants.every((variant) => (
+    isRecord(variant) &&
+    typeof variant.sku === "string" &&
+    typeof variant.color === "string" &&
+    typeof variant.size === "string" &&
+    typeof variant.price === "number" &&
+    Number.isFinite(variant.price) &&
+    typeof variant.stock === "number" &&
+    Number.isFinite(variant.stock) &&
+    (variant.image === undefined || variant.image === null || typeof variant.image === "string")
+  ));
 }
 
 export interface InventorySummaryResponse {
@@ -72,9 +116,8 @@ export interface InventoryLowStockReport {
   products: InventoryLowStockItem[];
 }
 
-const INVENTORY_BASE_URL = (process.env.INVENTORY_API_BASE_URL ?? "http://localhost:5000").replace(/\/+$/, "");
-const INVENTORY_AUTH_TIMEOUT_MS = 10_000;
-const INVENTORY_REQUEST_TIMEOUT_MS = 10_000;
+const INVENTORY_AUTH_TIMEOUT_MS = 5_000;
+const INVENTORY_REQUEST_TIMEOUT_MS = 5_000;
 
 const inventoryConnectionStorage = new AsyncLocalStorage<InventoryApiConnection>();
 
@@ -86,13 +129,135 @@ async function assertInventoryUrl(
     allowConfiguredDevelopmentLoopback &&
     isConfiguredDevelopmentLoopbackUrl(
       raw,
-      INVENTORY_BASE_URL,
+      process.env.INVENTORY_API_BASE_URL ?? "",
       process.env.NODE_ENV,
     )
   ) {
     return new URL(raw);
   }
-  return assertSafeOutboundUrl(raw);
+  try {
+    return await assertSafeOutboundUrl(raw);
+  } catch (error) {
+    const category = networkErrorCategory(error);
+    throw new InventoryApiError(
+      category === "network" ? "validation" : category,
+      category === "timeout"
+        ? "Inventory host DNS lookup timed out."
+        : "Inventory Backend URL is not allowed or its host could not be validated.",
+      undefined,
+      { cause: error },
+      "url_validation",
+    );
+  }
+}
+
+export async function validateInventoryApiBaseUrl(raw: string): Promise<string> {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new InventoryApiError("validation", "Enter a valid Inventory Backend URL.");
+  }
+  if (
+    !["http:", "https:"].includes(parsed.protocol) ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new InventoryApiError("validation", "Inventory Backend URL is not allowed.");
+  }
+  await assertInventoryUrl(parsed.toString(), true);
+  return parsed.toString().replace(/\/+$/, "");
+}
+
+function connectedLoginCredentials(config: Record<string, string>) {
+  if (!config.username?.trim() || !config.password) {
+    throw new InventoryApiError("authentication", "Inventory Backend username and password are required.");
+  }
+  return { username: config.username.trim(), password: config.password };
+}
+
+async function loginConnectedInventory(baseUrl: string, config: Record<string, string>): Promise<string> {
+  const stageStartedAt = Date.now();
+  const url = new URL("/auth/login", `${baseUrl.replace(/\/+$/, "")}/`);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(connectedLoginCredentials(config)),
+      signal: AbortSignal.timeout(INVENTORY_AUTH_TIMEOUT_MS),
+      redirect: "manual",
+    });
+  } catch (error) {
+    const category = networkErrorCategory(error);
+    throw new InventoryApiError(category, networkErrorMessage(category), undefined, { cause: error }, "login", Date.now() - stageStartedAt);
+  }
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new InventoryApiError("authentication", "Inventory Backend rejected the supplied username or password.", response.status, undefined, "login", Date.now() - stageStartedAt);
+    }
+    const error = normalizeInventoryError(response.status);
+    throw new InventoryApiError(error.category, error.message, error.httpStatus, { cause: error }, "login", Date.now() - stageStartedAt);
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new InventoryApiError("malformed_response", "Inventory Backend returned an invalid login response.", response.status, { cause: error }, "login", Date.now() - stageStartedAt);
+  }
+  if (!isRecord(payload) || typeof payload.token !== "string" || !payload.token) {
+    throw new InventoryApiError("malformed_response", "Inventory Backend login response did not contain an access token.", response.status, undefined, "login", Date.now() - stageStartedAt);
+  }
+  return payload.token;
+}
+
+export async function testInventoryApiConnection(
+  baseUrl: string,
+  credentials: { username: string; password: string },
+): Promise<{ productCount: number }> {
+  const operationStartedAt = Date.now();
+  let safeBaseUrl: string;
+  try {
+    safeBaseUrl = await validateInventoryApiBaseUrl(baseUrl);
+  } catch (error) {
+    if (error instanceof InventoryApiError) {
+      throw new InventoryApiError(error.category, error.message, error.httpStatus, { cause: error }, "url_validation", Date.now() - operationStartedAt);
+    }
+    throw error;
+  }
+  const token = await loginConnectedInventory(safeBaseUrl, credentials);
+  const requestStartedAt = Date.now();
+  const productsUrl = new URL("/products", `${safeBaseUrl}/`);
+  let response: Response;
+  try {
+    response = await fetch(productsUrl, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(INVENTORY_REQUEST_TIMEOUT_MS),
+      redirect: "manual",
+    });
+  } catch (error) {
+    const category = networkErrorCategory(error);
+    throw new InventoryApiError(category, networkErrorMessage(category), undefined, { cause: error }, "products", Date.now() - requestStartedAt);
+  }
+  if (!response.ok) {
+    const error = normalizeInventoryError(response.status);
+    throw new InventoryApiError(error.category, error.message, error.httpStatus, { cause: error }, "products", Date.now() - requestStartedAt);
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new InventoryApiError("malformed_response", "Inventory Backend returned an invalid product-list response.", response.status, { cause: error }, "products", Date.now() - requestStartedAt);
+  }
+  if (!Array.isArray(payload) || !payload.every(isInventoryProduct)) {
+    throw new InventoryApiError("malformed_response", "Inventory Backend returned an invalid product list.", response.status, undefined, "products", Date.now() - requestStartedAt);
+  }
+  return { productCount: payload.length };
 }
 
 export function runWithInventoryApiConnection<T>(
@@ -101,9 +266,6 @@ export function runWithInventoryApiConnection<T>(
 ): Promise<T> {
   return inventoryConnectionStorage.run(connection, operation);
 }
-
-let inventoryToken: string | null = null;
-let inventoryTokenExpiresAt = 0;
 
 export function mapCommandFlowRoleToInventoryRole(role: string): InventoryRole {
   switch ((role || "").toUpperCase()) {
@@ -117,82 +279,63 @@ export function mapCommandFlowRoleToInventoryRole(role: string): InventoryRole {
   }
 }
 
-async function getInventoryToken(): Promise<string> {
-  const username = process.env.INVENTORY_API_USERNAME;
-  const password = process.env.INVENTORY_API_PASSWORD;
-
-  if (!username || !password) {
-    throw new Error("Inventory API credentials are not configured.");
-  }
-
-  if (inventoryToken && Date.now() < inventoryTokenExpiresAt) {
-    return inventoryToken;
-  }
-
-  const loginUrl = await assertInventoryUrl(
-    new URL("/auth/login", `${INVENTORY_BASE_URL}/`).toString(),
-    true,
-  );
-  let response: Response;
-  try {
-    response = await fetch(loginUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        username,
-        password,
-      }),
-      signal: AbortSignal.timeout(INVENTORY_AUTH_TIMEOUT_MS),
-      redirect: "manual",
-    });
-  } catch {
-    throw new Error("Inventory authentication is unavailable.");
-  }
-
-  if (!response.ok) {
-    throw new Error("Inventory authentication failed.");
-  }
-
-  const data = (await response.json()) as InventoryAuthResponse;
-
-  if (!data?.token || typeof data.token !== "string") {
-    throw new Error("Inventory authentication failed.");
-  }
-
-  inventoryToken = data.token;
-  inventoryTokenExpiresAt = Date.now() + 24 * 60 * 60 * 1000;
-
-  return inventoryToken;
-}
-
-function normalizeInventoryError(status: number): Error {
+function normalizeInventoryError(status: number): InventoryApiError {
   if (status === 401) {
-    return new Error("Inventory authentication failed.");
+    return new InventoryApiError("authentication", "Inventory authentication failed.", status);
   }
 
   if (status === 403) {
-    return new Error("You do not have permission to perform this inventory operation.");
+    return new InventoryApiError("permission", "You do not have permission to perform this inventory operation.", status);
   }
 
   if (status === 404) {
-    return new Error("Inventory endpoint or product was not found.");
+    return new InventoryApiError("not_found", "Inventory endpoint or product was not found.", status);
   }
 
   if (status === 400) {
-    return new Error("Invalid product data.");
+    return new InventoryApiError("validation", "Inventory rejected the request data.", status);
   }
 
   if (status === 409) {
-    return new Error("Inventory resource conflict.");
+    return new InventoryApiError("conflict", "Inventory resource conflict.", status);
   }
 
   if (status >= 500) {
-    return new Error("Inventory service is currently unavailable.");
+    return new InventoryApiError("service_unavailable", "Inventory service is currently unavailable.", status);
   }
 
-  return new Error("Inventory request failed.");
+  return new InventoryApiError("http_error", "Inventory request failed.", status);
+}
+
+function networkErrorCategory(error: unknown): Exclude<InventoryApiErrorCategory,
+  "authentication" | "permission" | "not_found" | "validation" | "conflict" | "http_error" | "service_unavailable" | "malformed_response"> {
+  const visited = new Set<object>();
+  let current = error;
+  while (current && typeof current === "object" && !visited.has(current)) {
+    visited.add(current);
+    const record = current as { name?: unknown; code?: unknown; cause?: unknown };
+    if (record.name === "AbortError" || record.name === "TimeoutError") return "timeout";
+    const code = typeof record.code === "string" ? record.code.toUpperCase() : "";
+    if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "EAI_FAIL") return "dns";
+    if (code === "ECONNREFUSED") return "connection_refused";
+    if (record.cause === undefined) break;
+    current = record.cause;
+  }
+
+  return "network";
+}
+
+function networkErrorMessage(category: ReturnType<typeof networkErrorCategory>): string {
+  switch (category) {
+    case "timeout":
+      return "Inventory service request timed out.";
+    case "dns":
+      return "Unable to resolve the Inventory service host.";
+    case "connection_refused":
+      return "Inventory service refused the connection.";
+    default:
+      return "Inventory service is unavailable.";
+  }
 }
 
 function applyConnectedClientAuth(headers: Headers, connection: InventoryApiConnection) {
@@ -218,6 +361,8 @@ function applyConnectedClientAuth(headers: Headers, connection: InventoryApiConn
       if (!authConfig.username || !authConfig.password) throw new Error("Connected client basic credentials are unavailable.");
       headers.set("Authorization", `Basic ${Buffer.from(`${authConfig.username}:${authConfig.password}`).toString("base64")}`);
       return;
+    case "INVENTORY_LOGIN":
+      return;
   }
 }
 
@@ -229,15 +374,23 @@ function validateInventoryPath(path: string) {
 
 async function inventoryRequest<T>(
   path: string,
-  options: RequestInit = {},
-  requireAuth = false
+  options: RequestInit = {}
 ): Promise<T> {
   validateInventoryPath(path);
   const connection = inventoryConnectionStorage.getStore();
-  const baseUrl = connection?.baseUrl ?? INVENTORY_BASE_URL;
+  if (!connection) {
+    throw new InventoryApiError(
+      "validation",
+      "Select a target client before running this tool.",
+      undefined,
+      undefined,
+      "client_selection",
+    );
+  }
+  const baseUrl = connection.baseUrl;
   const requestUrl = await assertInventoryUrl(
     new URL(path.replace(/^\/+/, ""), `${baseUrl.replace(/\/+$/, "")}/`).toString(),
-    !connection,
+    true,
   );
   if (requestUrl.protocol !== "http:" && requestUrl.protocol !== "https:") {
     throw new Error("Inventory base URL must use HTTP or HTTPS.");
@@ -249,14 +402,15 @@ async function inventoryRequest<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  const maxAttempts = connection ? 1 : (requireAuth ? 2 : 1);
+  const maxAttempts = 1;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (connection) {
       applyConnectedClientAuth(headers, connection);
-    } else if (requireAuth) {
-      const token = await getInventoryToken();
-      headers.set("Authorization", `Bearer ${token}`);
+      if (connection.authType === "INVENTORY_LOGIN") {
+        const token = await loginConnectedInventory(baseUrl, connection.authConfig);
+        headers.set("Authorization", `Bearer ${token}`);
+      }
     }
 
     const signal = connection
@@ -268,11 +422,9 @@ async function inventoryRequest<T>(
     try {
       response = await fetch(requestUrl.toString(), { ...options, headers, signal, redirect: "manual" });
     } catch (error) {
-      requestTrace?.onRequestFailed(error instanceof Error ? error.message : "Connected client request failed.");
-      if (error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")) {
-        throw new Error("Connected client request timed out.");
-      }
-      throw new Error("Inventory service is unavailable.");
+      const category = networkErrorCategory(error);
+      requestTrace?.onRequestFailed("Connected client request failed.", undefined, category);
+      throw new InventoryApiError(category, networkErrorMessage(category), undefined, { cause: error });
     }
 
     try {
@@ -280,28 +432,36 @@ async function inventoryRequest<T>(
       let payload: unknown = null;
 
       if (contentType.includes("application/json")) {
-        payload = await response.json();
+        try {
+          payload = await response.json();
+        } catch (error) {
+          throw new InventoryApiError(
+            "malformed_response",
+            "Inventory service returned malformed JSON.",
+            response.status,
+            { cause: error },
+          );
+        }
       } else if (response.status !== 204) {
         payload = await response.text();
-      }
-
-      if (response.status === 401 && requireAuth && attempt === 0) {
-        inventoryToken = null;
-        inventoryTokenExpiresAt = 0;
-        continue;
       }
 
       if (!response.ok) throw normalizeInventoryError(response.status);
 
       if (response.status === 204) {
-        requestTrace?.onRequestComplete();
+        requestTrace?.onRequestComplete(response.status);
         return null as T;
       }
 
-      requestTrace?.onRequestComplete();
+      requestTrace?.onRequestComplete(response.status);
       return payload as T;
     } catch (error) {
-      requestTrace?.onRequestFailed(error instanceof Error ? error.message : "Connected client request failed.");
+      const inventoryError = error instanceof InventoryApiError ? error : undefined;
+      requestTrace?.onRequestFailed(
+        "Connected client request failed.",
+        inventoryError?.httpStatus ?? response.status,
+        inventoryError?.category ?? "malformed_response",
+      );
       throw error;
     }
   }
@@ -310,7 +470,11 @@ async function inventoryRequest<T>(
 }
 
 export async function getProducts(): Promise<InventoryProduct[]> {
-  return inventoryRequest<InventoryProduct[]>("/products", { method: "GET" });
+  const payload = await inventoryRequest<unknown>("/products", { method: "GET" });
+  if (!Array.isArray(payload) || !payload.every(isInventoryProduct)) {
+    throw new InventoryApiError("malformed_response", "Inventory service returned an invalid product list.");
+  }
+  return payload;
 }
 
 export async function getProduct(productId: string): Promise<InventoryProduct> {
@@ -318,7 +482,11 @@ export async function getProduct(productId: string): Promise<InventoryProduct> {
     throw new Error("Product ID is required.");
   }
 
-  return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}`, { method: "GET" });
+  const payload = await inventoryRequest<unknown>(`/products/${encodeURIComponent(productId)}`, { method: "GET" });
+  if (!isInventoryProduct(payload)) {
+    throw new InventoryApiError("malformed_response", "Inventory service returned invalid product details.");
+  }
+  return payload;
 }
 
 export async function getInventorySummary(category?: string): Promise<InventorySummaryResponse> {
@@ -378,7 +546,7 @@ export async function createProduct(payload: {
   return inventoryRequest<InventoryProduct>("/products", {
     method: "POST",
     body: JSON.stringify(payload),
-  }, true);
+  });
 }
 
 export async function updateProduct(
@@ -398,7 +566,7 @@ export async function updateProduct(
   return inventoryRequest<InventoryProduct>(`/products/${encodeURIComponent(productId)}`, {
     method: "PUT",
     body: JSON.stringify(payload),
-  }, true);
+  });
 }
 
 export async function updateStock(
@@ -427,7 +595,7 @@ export async function updateStock(
         stock: payload.stock,
       }],
     }),
-  }, true);
+  });
 }
 
 export async function reduceProductPrice(
@@ -461,7 +629,7 @@ export async function reduceProductPrice(
         price: payload.price,
       }],
     }),
-  }, true);
+  });
 }
 
 export async function bulkUpdateStatus(
@@ -479,7 +647,7 @@ export async function bulkUpdateStatus(
   return inventoryRequest<{ updated: number; failed: number; affectedProductIds: string[]; errors: string[] }>("/products/bulk-status", {
     method: "PATCH",
     body: JSON.stringify({ productIds, status }),
-  }, true);
+  });
 }
 
 export async function deleteProduct(productId: string): Promise<{ message: string }> {
@@ -489,5 +657,5 @@ export async function deleteProduct(productId: string): Promise<{ message: strin
 
   return inventoryRequest<{ message: string }>(`/products/${encodeURIComponent(productId)}`, {
     method: "DELETE",
-  }, true);
+  });
 }

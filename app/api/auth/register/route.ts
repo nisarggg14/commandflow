@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { enforceRateLimit, requestAddress } from "@/lib/rate-limit";
-import { registerUser } from "@/services/auth.service";
+import {
+  DUPLICATE_ACCOUNT_MESSAGE,
+  EXISTING_COMPANY_MESSAGE,
+  INVALID_INVITATION_CODE_MESSAGE,
+  registerUser,
+} from "@/services/auth.service";
 import { ZodError } from "zod";
-
-const DUPLICATE_ACCOUNT_MESSAGE = "An account with this email already exists.";
 
 export function getRegistrationErrorResponse(error: unknown): { status: number; message: string } {
   if (error instanceof ZodError) {
@@ -13,6 +16,14 @@ export function getRegistrationErrorResponse(error: unknown): { status: number; 
 
   if (error instanceof Error && error.message === DUPLICATE_ACCOUNT_MESSAGE) {
     return { status: 409, message: DUPLICATE_ACCOUNT_MESSAGE };
+  }
+
+  if (error instanceof Error && error.message === EXISTING_COMPANY_MESSAGE) {
+    return { status: 409, message: EXISTING_COMPANY_MESSAGE };
+  }
+
+  if (error instanceof Error && error.message === INVALID_INVITATION_CODE_MESSAGE) {
+    return { status: 400, message: INVALID_INVITATION_CODE_MESSAGE };
   }
 
   if (error instanceof Error && error.message === "A strong production password is required.") {

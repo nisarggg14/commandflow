@@ -49,7 +49,9 @@ enum ClientStatus {
 model Company {
   id          String   @id @default(cuid())
   name        String
+  normalizedName String @unique
   slug        String   @unique
+  invitationCodeHash String? @unique
   industry    String?
   logo        String?
   createdAt   DateTime @default(now())
@@ -189,7 +191,9 @@ model ConnectedClient {
   baseUrl     String
   authType    String       @default("BEARER")
   authConfig  String?      @db.Text
-  enabledTools String?     @db.Text
+  lastConnectionTestStatus String?
+  lastConnectionTestAt DateTime?
+  enabledTools String?      @db.Text
 
   companyId   String
   company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)

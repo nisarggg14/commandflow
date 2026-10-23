@@ -4,6 +4,9 @@ import assert from "node:assert/strict";
 import { encryptSecret } from "../lib/mfa";
 import { getConnectedClientToolNames, withAuthenticatedConnectedClient } from "../services/mcp-connector.service";
 import { getProduct } from "../services/inventory-api.service";
+import { createGetProductsTool } from "../mcp/tools/products/getProducts";
+import { CommandFlowMCPServer } from "../mcp/server";
+import { Permission } from "../mcp/types";
 import { CLIENT_TOOL_NAMES } from "../mcp/client-tool-policy";
 
 process.env.MFA_ENCRYPTION_KEY ??= "test-mcp-connector-encryption-key-32-bytes";
@@ -73,6 +76,63 @@ test("MCP connector derives base URL and Authorization from the selected client"
     return Response.json({
       productId: "P1", name: "Product", brand: "Brand", category: "General", description: "Product",
       status: "active", variants: [],
+    });
+
+    test("products.getProducts executes through the MCP runtime and returns the Inventory response", async () => {
+      const originalFetch = globalThis.fetch;
+      const originalNodeEnv = process.env.NODE_ENV;
+      Reflect.set(process.env, "NODE_ENV", "test");
+      const dnsLookupMock = mock.method(dns, "lookup", async () => [
+        { address: "203.0.113.10", family: 4 },
+      ]);
+      let requestedUrl = "";
+      globalThis.fetch = async (input) => {
+        requestedUrl = String(input);
+        return Response.json([{
+          productId: "P1002",
+          name: "Trail Jacket",
+          brand: "Northwind",
+          category: "Outerwear",
+          description: "Water-resistant jacket",
+          status: "active",
+          variants: [{ sku: "TJ-BLK-M", color: "black", size: "M", price: 84.5, stock: 12 }],
+        }]);
+      };
+
+      try {
+        const context = {
+          userId: "user-1",
+          companyId: "company-1",
+          role: Permission.VIEWER,
+          requestId: "request-products",
+          timestamp: new Date().toISOString(),
+          connectedClientId: "client-1",
+          prisma: {
+            connectedClient: {
+              findFirst: async () => ({
+                baseUrl: "https://inventory.example.com/api",
+                authType: "NONE",
+                authConfig: null,
+              }),
+            },
+          },
+          logger: async () => undefined,
+        } as never;
+        const server = new CommandFlowMCPServer(context);
+        server.registerTool(createGetProductsTool());
+
+        const result = await server.executeTool("products.getProducts", {}, undefined);
+
+        assert.equal(result.success, true);
+        assert.equal(result.tool, "products.getProducts");
+        assert.equal(requestedUrl, "https://inventory.example.com/api/products");
+        assert.equal((result.data as Array<{ productId: string }>)[0]?.productId, "P1002");
+      } finally {
+        globalThis.fetch = originalFetch;
+        dnsLookupMock.mock.restore();
+        if (originalNodeEnv === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
+        else Reflect.set(process.env, "NODE_ENV", originalNodeEnv);
+      }
     });
   };
 

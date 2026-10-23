@@ -13,7 +13,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 }
 
 export async function PATCH(req: NextRequest, { params }: RouteParams) {
-  try { const authUser = await authenticate(req); requireRole(authUser, [UserRole.ADMIN, UserRole.MANAGER]); const { id } = await params; return NextResponse.json({ success: true, connectedClient: await updateConnectedClient(id, await req.json(), { id: authUser.id, companyId: authUser.companyId }) }); }
+  try { const authUser = await authenticate(req); requireRole(authUser, [UserRole.ADMIN]); const { id } = await params; return NextResponse.json({ success: true, connectedClient: await updateConnectedClient(id, await req.json(), { id: authUser.id, companyId: authUser.companyId }) }); }
   catch (error) { return connectedClientErrorResponse(error); }
 }
 

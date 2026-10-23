@@ -17,6 +17,10 @@ export async function authenticate(req: NextRequest): Promise<AuthUser> {
   const tokenFromCookie = req.cookies.get("token")?.value;
   const token = tokenFromHeader ?? tokenFromCookie;
 
+  return authenticateToken(token);
+}
+
+export async function authenticateToken(token: string | undefined): Promise<AuthUser> {
   if (!token) {
     throw new UnauthorizedError("Authentication required.");
   }

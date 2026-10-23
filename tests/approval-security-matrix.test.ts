@@ -20,9 +20,11 @@ import { NextRequest } from "next/server";
 import { GET as getApprovalsRoute } from "../app/api/approvals/route";
 
 async function createUserSet() {
+  const companyName = `Security Test ${Date.now()} ${Math.random().toString(36).slice(2, 8)}`;
   const company = await prisma.company.create({
     data: {
-      name: `Security Test ${Date.now()} ${Math.random().toString(36).slice(2, 8)}`,
+      name: companyName,
+      normalizedName: companyName.trim().toLowerCase(),
       slug: `security-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     },
   });
@@ -73,9 +75,11 @@ async function createUserSet() {
     },
   });
 
+  const otherCompanyName = `Other Company ${Date.now()}`;
   const otherCompany = await prisma.company.create({
     data: {
-      name: `Other Company ${Date.now()}`,
+      name: otherCompanyName,
+      normalizedName: otherCompanyName.trim().toLowerCase(),
       slug: `other-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     },
   });

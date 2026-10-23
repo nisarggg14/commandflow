@@ -98,9 +98,11 @@ async function runMfaTests() {
   assert.equal(isInvalid, false, "Invalid TOTP code should be rejected");
 
   // Test 4: Challenge creation & single-use consumption in DB
+  const companyName = `MFA Test ${Date.now()}`;
   const company = await prisma.company.create({
     data: {
-      name: `MFA Test ${Date.now()}`,
+      name: companyName,
+      normalizedName: companyName.trim().toLowerCase(),
       slug: `mfa-test-${Date.now()}`,
     },
   });

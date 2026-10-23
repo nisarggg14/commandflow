@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createToolsForClient } from "../mcp/tools";
+import { createDefaultTools, createToolsForClient } from "../mcp/tools";
 import { normalizeEnabledToolNames } from "../mcp/client-tool-policy";
+
+test("the default registry defines each existing tool name exactly once", () => {
+  const tools = createDefaultTools();
+  const names = tools.map((tool) => tool.name);
+  assert.equal(names.length, 33);
+  assert.equal(new Set(names).size, names.length);
+});
 
 test("client registry exposes only server-approved enabled tools", () => {
   const tools = createToolsForClient(["products.getProducts", "frontend.updateTheme"]);
