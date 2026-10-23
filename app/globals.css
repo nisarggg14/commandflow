@@ -203,4 +203,28 @@
   .cf-page { @apply min-h-screen bg-background text-foreground; }
   .cf-section-title { @apply text-sm font-semibold tracking-tight text-foreground; }
   .cf-kicker { @apply text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground; }
+
+  /* Approval-risk surfaces use the semantic destructive token consistently. */
+  article[id^="approval-request-"] [class*="bg-amber-500/10"] {
+    background-color: color-mix(in srgb, var(--destructive) 10%, transparent);
+  }
+  article[id^="approval-request-"] [class*="ring-amber-500/40"] {
+    --tw-ring-color: color-mix(in srgb, var(--destructive) 40%, transparent);
+  }
+  article[id^="approval-request-"] [class*="text-amber-600"] {
+    color: var(--destructive);
+  }
+  article[id^="approval-request-"] [class*="text-amber-400"] {
+    color: var(--destructive);
+  }
+  .cf-card:has([class*="border-amber-500/30"]) [class*="border-amber-500/30"] {
+    border-color: color-mix(in srgb, var(--destructive) 30%, transparent);
+    background-color: color-mix(in srgb, var(--destructive) 10%, transparent);
+  }
+  .cf-card:has([class*="border-amber-500/30"]) [class*="text-amber-600"] {
+    color: var(--destructive);
+  }
+  .cf-card:has([class*="border-amber-500/30"]) [class*="text-amber-400"] {
+    color: var(--destructive);
+  }
 }

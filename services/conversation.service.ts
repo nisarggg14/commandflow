@@ -25,7 +25,7 @@ export async function createConversation(
 }
 
 export async function getConversations(companyId: string, userId: string) {
-  return prisma.conversation.findMany({
+  const conversations = await prisma.conversation.findMany({
     where: { companyId, userId },
     include: {
       messages: {
@@ -38,6 +38,14 @@ export async function getConversations(companyId: string, userId: string) {
       updatedAt: "desc",
     },
   });
+
+  return conversations.map((conversation) => ({
+    ...conversation,
+    messages: conversation.messages.map((message) => ({
+      ...message,
+      role: message.role.toLowerCase() as "user" | "assistant" | "system",
+    })),
+  }));
 }
 
 export async function getConversationById(

@@ -133,6 +133,7 @@ model Conversation {
   connectedClient   ConnectedClient? @relation(fields: [connectedClientId], references: [id], onDelete: SetNull)
 
   messages Message[]
+  approvals Approval[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -297,6 +298,9 @@ model Approval {
   requesterId String
   requester   User   @relation("ApprovalRequester", fields: [requesterId], references: [id], onDelete: Cascade)
 
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
   approverId String?
   approver   User?  @relation("ApprovalApprover", fields: [approverId], references: [id], onDelete: SetNull)
 
@@ -304,6 +308,9 @@ model Approval {
   riskLevel           String
   purpose             String
   argumentsHash       String
+  argumentsJson       String? @db.Text
+  originalCommand     String? @db.Text
+  connectedClientId   String?
   safeArgumentsSummary String @db.Text
   status              ApprovalStatus @default(PENDING)
   expiresAt           DateTime
@@ -315,6 +322,8 @@ model Approval {
   @@index([companyId])
   @@index([requesterId])
   @@index([approverId])
+  @@index([conversationId])
+  @@index([connectedClientId])
   @@index([status])
   @@index([expiresAt])
 }

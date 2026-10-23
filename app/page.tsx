@@ -46,6 +46,8 @@ interface PendingMfaRequest {
   conversationId: string
   message: string
   toolName?: string
+  approvalId?: string
+  connectedClientId?: string | null
 }
 
 function parseExecutionPayload(content: string): CommandExecutionPayload | null {
@@ -128,6 +130,7 @@ export default function Page() {
   const [mfaCode, setMfaCode] = useState('')
   const [mfaError, setMfaError] = useState('')
   const [mfaLoading, setMfaLoading] = useState(false)
+  const [continuingApprovalId, setContinuingApprovalId] = useState<string | null>(null)
   const [connectedClients, setConnectedClients] = useState<ConnectedClient[]>([])
   const [connectedClientsError, setConnectedClientsError] = useState('')
   const [activeConnectedClientId, setActiveConnectedClientId] = useState<string | undefined>()
@@ -169,10 +172,27 @@ export default function Page() {
       const clientsRequest = fetch('/api/connected-clients?status=ACTIVE', {
         credentials: 'include',
       }).catch(() => null)
-      const [clientsRes] = await Promise.all([
+      const [clientsRes, conversationsRes] = await Promise.all([
         clientsRequest,
-        handleNewChat(),
+        fetch('/api/conversations', { credentials: 'include' }).catch(() => null),
       ])
+      let restoredConversationClientId: string | undefined
+      if (conversationsRes?.ok) {
+        const conversationsData = await conversationsRes.json()
+        const restored = Array.isArray(conversationsData.conversations)
+          ? conversationsData.conversations as Conversation[]
+          : []
+        if (restored.length > 0) {
+          setConversations(restored)
+          setActiveConversationId(restored[0].id)
+          restoredConversationClientId = restored[0].connectedClientId ?? undefined
+          setActiveConnectedClientId(restoredConversationClientId)
+        } else {
+          await handleNewChat()
+        }
+      } else {
+        await handleNewChat()
+      }
       if (!clientsRes?.ok) {
         setConnectedClientsError('Connected clients are temporarily unavailable.')
         return
@@ -184,7 +204,7 @@ export default function Page() {
       setConnectedClients(clients)
       setConnectedClientsError('')
       const savedSelection = window.localStorage.getItem(`commandflow:selected-client:${data.user.company?.id ?? ''}`)
-      if (savedSelection && clients.some((client) => client.id === savedSelection)) {
+      if (!restoredConversationClientId && savedSelection && clients.some((client) => client.id === savedSelection)) {
         setActiveConnectedClientId(savedSelection)
       }
     }
@@ -241,7 +261,7 @@ export default function Page() {
 
   const handleSendMessage = async (
     message: string,
-    options?: { mfaChallengeToken?: string; skipUserMessage?: boolean }
+    options?: { mfaChallengeToken?: string; skipUserMessage?: boolean; approvalId?: string; connectedClientId?: string | null }
   ) => {
     if (!activeConversationId) return
 
@@ -277,7 +297,8 @@ export default function Page() {
           conversationId: activeConversationId,
           message,
           mfaChallengeToken: options?.mfaChallengeToken,
-          connectedClientId: activeConnectedClientId ?? null,
+          connectedClientId: options?.connectedClientId === undefined ? activeConnectedClientId ?? null : options.connectedClientId,
+          approvalId: options?.approvalId,
         }),
       })
 
@@ -416,6 +437,50 @@ export default function Page() {
     }
   }
 
+  const handleContinueApproved = async (
+    payload: CommandExecutionPayload,
+    message: string,
+    connectedClientId: string | null | undefined,
+  ) => {
+    if (!payload.approvalId) return
+    setContinuingApprovalId(payload.approvalId)
+    setCommandError('')
+    try {
+      const response = await fetch(`/api/approvals/${encodeURIComponent(payload.approvalId)}`, { credentials: 'include' })
+      const body = await response.json()
+      if (response.status === 401) {
+        router.push('/login')
+        return
+      }
+      if (!response.ok) {
+        setCommandError(body.message || 'Unable to check the approval status.')
+        return
+      }
+      const status = body.approval?.status
+      if (status !== 'APPROVED') {
+        setCommandError(status === 'PENDING'
+          ? 'Administrator approval is still pending.'
+          : `This request is ${String(status || 'unavailable').toLowerCase()} and cannot be continued.`)
+        return
+      }
+      setPendingMfaRequest({
+        conversationId: activeConversationId,
+        message: typeof body.approval?.originalCommand === 'string' && body.approval.originalCommand.trim()
+          ? body.approval.originalCommand
+          : message,
+        toolName: payload.toolName ?? undefined,
+        approvalId: payload.approvalId,
+        connectedClientId,
+      })
+      setMfaCode('')
+      setMfaError('')
+    } catch {
+      setCommandError('Unable to check the approval status.')
+    } finally {
+      setContinuingApprovalId(null)
+    }
+  }
+
   const handleVerifyMfa = async () => {
     if (!pendingMfaRequest) return
 
@@ -452,9 +517,38 @@ export default function Page() {
 
     setPendingMfaRequest(null)
     setMfaCode('')
+    if (pendingMfaRequest.approvalId) {
+      try {
+        const continuationResponse = await fetch(`/api/approvals/${encodeURIComponent(pendingMfaRequest.approvalId)}/continue`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ challengeToken }),
+        })
+        const continuationData = await continuationResponse.json()
+        if (!continuationResponse.ok || !continuationData.response) {
+          setCommandError(continuationData.message || 'Approved operation could not be continued.')
+          return
+        }
+        const assistantMessage: Message = {
+          id: createClientId(),
+          role: 'assistant',
+          content: JSON.stringify(continuationData.response),
+        }
+        setConversations((prev) => prev.map((conversation) => (
+          conversation.id === pendingMfaRequest.conversationId
+            ? { ...conversation, messages: [...conversation.messages, assistantMessage] }
+            : conversation
+        )))
+      } catch {
+        setCommandError('Approved operation could not be continued.')
+      }
+      return
+    }
     await handleSendMessage(pendingMfaRequest.message, {
       mfaChallengeToken: challengeToken,
       skipUserMessage: true,
+      connectedClientId: pendingMfaRequest.connectedClientId,
     })
   }
 
@@ -557,7 +651,7 @@ export default function Page() {
               <EmptyState onSuggestionClick={handleSuggestionClick} role={authUser?.role} />
             ) : (
               <div className="space-y-6">
-                {activeConversation.messages.map((msg) => {
+                {activeConversation.messages.map((msg, index) => {
                   if (msg.role === 'assistant') {
                     const payload = parseExecutionPayload(msg.content)
 
@@ -565,7 +659,13 @@ export default function Page() {
                       return (
                         <div key={msg.id} className="flex justify-start">
                           <div className="w-full max-w-3xl">
-                            <CommandExecutionCard payload={payload} />
+                            <CommandExecutionCard
+                              payload={payload}
+                              continuing={payload.approvalId === continuingApprovalId}
+                              onContinueApproved={payload.status === 'PENDING_APPROVAL' && payload.approvalId && activeConversation.messages[index - 1]?.role === 'user'
+                                ? () => void handleContinueApproved(payload, activeConversation.messages[index - 1].content, payload.connectedClientId)
+                                : undefined}
+                            />
                           </div>
                         </div>
                       )

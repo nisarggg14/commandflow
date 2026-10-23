@@ -21,6 +21,7 @@ import {
   generateResponse,
   GeminiIntentAnalysisError,
   GeminiIntentResponseError,
+  GeminiQuotaError,
   GeminiTemporaryUnavailableError,
   retryGeminiRequest,
 } from "../services/llm.service";
@@ -254,6 +255,22 @@ test("Gemini 429 honors Retry-After when retrying", async () => {
 
   assert.equal(result, "recovered");
   assert.deepEqual(state.delays, [2_000]);
+});
+
+test("quota exhaustion can fail without retrying when requested by the provider adapter", async () => {
+  const state = retryOptions({ maxAttempts: 3 });
+  let calls = 0;
+
+  await assert.rejects(
+    () => retryGeminiRequest(async () => {
+      calls += 1;
+      throw transientError(429);
+    }, { ...state.options, retryRateLimited: false }),
+    GeminiQuotaError,
+  );
+
+  assert.equal(calls, 1);
+  assert.deepEqual(state.delays, []);
 });
 
 test("Gemini retries transient network failures and honors provider retry delay", async () => {
@@ -718,6 +735,32 @@ test("deterministic pre-router validates zero-stock update with the registered s
   assert.equal(geminiCalls, 0);
 });
 
+test("deterministic product routing covers details and set-price commands", async () => {
+  const server = createServer(Permission.MANAGER, "client-1");
+  const failGemini = async () => {
+    throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
+  };
+
+  const details = await parseCommand("Get details for P1001", server, undefined, failGemini);
+  const price = await parseCommand(
+    "Update price of P1001 variant NIKE-AM90-BLK-9 to 5555",
+    server,
+    undefined,
+    failGemini,
+  );
+
+  assert.deepEqual(details, { tool: "products.getProduct", arguments: { productId: "P1001" } });
+  assert.deepEqual(price, {
+    tool: "products.adjustPrice",
+    arguments: {
+      productId: "P1001",
+      operation: "set",
+      price: 5555,
+      sku: "NIKE-AM90-BLK-9",
+    },
+  });
+});
+
 test("malformed or unknown SKU commands cannot dispatch a stock update", async () => {
   const { server, calls } = createMockCommandServer(Permission.MANAGER, "client-1");
 
@@ -803,6 +846,26 @@ test("UI background commands route only to registered UI tools and reject unsupp
   assert.equal(geminiCalls, 0);
 });
 
+test("frontend deterministic routes use only allowlisted registered values", async () => {
+  const server = createServer(Permission.ADMIN, "client-1");
+  const failGemini = async () => {
+    throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
+  };
+
+  assert.deepEqual(
+    await parseCommand("Update frontend theme to dark", server, undefined, failGemini),
+    { tool: "frontend.updateTheme", arguments: { theme: "dark" } },
+  );
+  assert.deepEqual(
+    await parseCommand("Update navbar density to compact and show company name", server, undefined, failGemini),
+    { tool: "frontend.updateNavbar", arguments: { density: "compact", showCompanyName: true } },
+  );
+  assert.deepEqual(
+    await parseCommand("Update branding accent to mint and mark to inventory", server, undefined, failGemini),
+    { tool: "frontend.updateBranding", arguments: { accent: "mint", mark: "inventory" } },
+  );
+});
+
 test("variant deletion is explicitly unsupported and never selects product deletion", async () => {
   const { server } = createMockCommandServer(Permission.ADMIN, "client-1");
   let geminiCalls = 0;
@@ -811,10 +874,46 @@ test("variant deletion is explicitly unsupported and never selects product delet
     throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
   };
 
-  const parsed = await parseCommand("Delete variant NIKE-AM90-BLK-9", server, undefined, noGemini);
-  assert.equal(parsed.action, "unknown");
-  assert.match(parsed.unsupportedMessage ?? "", /deleting a variant.*not supported/i);
+  for (const command of [
+    "Delete variant NIKE-AM90-BLK-9",
+    "Delete product P1001 variant NIKE-AM90-BLK-9",
+    'Delete product P1001 "NIKE-AM90-WHT-10"',
+    'Delete product P1002 "NIKE-AM90-WHT-10"',
+    'Delete variant UNKNOWN-SKU',
+  ]) {
+    const parsed = await parseCommand(command, server, undefined, noGemini);
+    assert.equal(parsed.action, "unknown");
+    assert.equal(parsed.tool, undefined);
+    assert.match(parsed.unsupportedMessage ?? "", /variant deletion.*connected inventory backend/i);
+  }
   assert.equal(geminiCalls, 0);
+});
+
+test("ordinary product deletion remains distinct from variant deletion", async () => {
+  const { server } = createMockCommandServer(Permission.ADMIN, "client-1");
+  const failGemini = async () => {
+    throw new GeminiTemporaryUnavailableError(3, 1_000, "unavailable");
+  };
+
+  const parsed = await parseCommand("Delete product P1001", server, undefined, failGemini);
+  assert.deepEqual(parsed, {
+    tool: "products.deleteProduct",
+    arguments: { productId: "P1001" },
+  });
+});
+
+test("Gemini quota exhaustion uses the validated deterministic product deletion route", async () => {
+  const server = createServer(Permission.ADMIN, "client-1");
+  const quotaFailure = async () => {
+    throw new GeminiQuotaError();
+  };
+
+  const parsed = await parseCommand("delete product P1001", server, undefined, quotaFailure);
+
+  assert.deepEqual(parsed, {
+    tool: "products.deleteProduct",
+    arguments: { productId: "P1001" },
+  });
 });
 
 test("valid Gemini intent output passes registry permission and input validation", async () => {

@@ -289,6 +289,91 @@ test("product reads reject malformed backend payloads rather than reporting empt
   }
 });
 
+test("product deletion uses the external product ID and propagates backend failures", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalBaseUrl = process.env.INVENTORY_API_BASE_URL;
+  Reflect.set(process.env, "NODE_ENV", "development");
+  process.env.INVENTORY_API_BASE_URL = inventoryBaseUrl;
+  const requests: Array<{ url: string; method: string }> = [];
+
+  try {
+    const { deleteProduct, InventoryApiError, runWithInventoryApiConnection } = await import("../services/inventory-api.service");
+    globalThis.fetch = async (input, init) => {
+      requests.push({ url: String(input), method: init?.method ?? "GET" });
+      return Response.json({ message: "Product deleted successfully" }, { status: 200 });
+    };
+
+    const result = await runWithInventoryApiConnection({
+      baseUrl: inventoryBaseUrl,
+      authType: "NONE",
+      authConfig: {},
+      requestId: "delete-test-request",
+    }, () => deleteProduct("P1001"));
+
+    assert.deepEqual(result, { message: "Product deleted successfully" });
+    assert.deepEqual(requests, [{ url: `${inventoryBaseUrl}/products/P1001`, method: "DELETE" }]);
+
+    globalThis.fetch = async () => Response.json({ message: "backend rejected deletion" }, { status: 409 });
+    await assert.rejects(
+      () => runWithInventoryApiConnection({ baseUrl: inventoryBaseUrl, authType: "NONE", authConfig: {} }, () => deleteProduct("P1001")),
+      (error: unknown) => error instanceof InventoryApiError && error.category === "conflict" && error.httpStatus === 409,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.INVENTORY_API_BASE_URL;
+    else process.env.INVENTORY_API_BASE_URL = originalBaseUrl;
+    if (originalNodeEnv === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
+    else Reflect.set(process.env, "NODE_ENV", originalNodeEnv);
+  }
+});
+
+test("price resolution converts a variant id to its external parent product id", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalBaseUrl = process.env.INVENTORY_API_BASE_URL;
+  Reflect.set(process.env, "NODE_ENV", "development");
+  process.env.INVENTORY_API_BASE_URL = inventoryBaseUrl;
+
+  try {
+    const { runWithInventoryApiConnection } = await import("../services/inventory-api.service");
+    const { resolveProductReference } = await import("../services/product-resolver.service");
+    globalThis.fetch = async () => Response.json([{
+      id: "internal-product-1",
+      productId: "P1001",
+      name: "Nike Air Max 90",
+      brand: "Nike",
+      category: "Shoes",
+      description: "Product",
+      status: "active",
+      variants: [{ id: "cmqzmhqyd0001u8hsl0o1jsox", sku: "NIKE-AM90-BLK-9", color: "Black", size: "9", price: 120, stock: 14 }],
+    }]);
+
+    const resolved = await runWithInventoryApiConnection({
+      baseUrl: inventoryBaseUrl,
+      authType: "NONE",
+      authConfig: {},
+    }, () => resolveProductReference(
+      "products.adjustPrice",
+      { productId: "cmqzmhqyd0001u8hsl0o1jsox", operation: "set", price: 5555 },
+      "Update the variant price",
+    ));
+
+    assert.deepEqual(resolved, {
+      productId: "P1001",
+      variantId: "cmqzmhqyd0001u8hsl0o1jsox",
+      operation: "set",
+      price: 5555,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.INVENTORY_API_BASE_URL;
+    else process.env.INVENTORY_API_BASE_URL = originalBaseUrl;
+    if (originalNodeEnv === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
+    else Reflect.set(process.env, "NODE_ENV", originalNodeEnv);
+  }
+});
+
 test("connected Inventory Backend login uses its real username/password contract and reads products with Bearer token", async () => {
   const originalFetch = globalThis.fetch;
   const originalNodeEnv = process.env.NODE_ENV;

@@ -19,6 +19,7 @@ interface ChatRequest {
   userId: string;
   companyId: string;
   mfaChallengeToken?: string;
+  approvalId?: string;
   connectedClientId: string | null;
   requestId?: string;
 }
@@ -39,6 +40,7 @@ function buildExecutionPayload(
     success: boolean;
     tool: string | null;
     outcome?: "APPROVAL_REQUIRED";
+    approvalId?: string;
     message?: string;
     data?: unknown;
     error?: { name: string; message: string };
@@ -51,7 +53,8 @@ function buildExecutionPayload(
     pendingApprovals: number;
     averageExecutionTime: number;
   },
-  stages: ExecutionStage[]
+  stages: ExecutionStage[],
+  connectedClientId?: string | null,
 ) {
   const executionTimeMs = Date.now() - startedAt;
   const rowsAffected =
@@ -65,6 +68,10 @@ function buildExecutionPayload(
     type: "execution" as const,
     status: getExecutionStatus(result),
     toolName: result.tool,
+    connectedClientId: connectedClientId ?? null,
+    approvalId: result.outcome === "APPROVAL_REQUIRED" && typeof result.approvalId === "string"
+      ? result.approvalId
+      : undefined,
     rowsAffected,
     executionTimeMs,
     errors: result.success ? [] : [result.error?.message ?? result.message ?? "Execution failed"],
@@ -82,7 +89,7 @@ function buildExecutionPayload(
 }
 
 export async function processChat(data: ChatRequest) {
-  const { conversationId, message, userId, companyId, mfaChallengeToken } = data;
+  const { conversationId, message, userId, companyId, mfaChallengeToken, approvalId } = data;
 
   const conversation = await prisma.conversation.findFirst({
     where: {
@@ -139,6 +146,9 @@ export async function processChat(data: ChatRequest) {
     selectedConnectedClientId,
     enabledToolNames,
     data.requestId,
+    approvalId,
+    conversationId,
+    message,
   );
   const startedAt = Date.now();
   const trace = new ExecutionTrace(data.requestId);
@@ -231,7 +241,7 @@ export async function processChat(data: ChatRequest) {
         ? "Skipped because the execution is awaiting administrator approval."
         : "Skipped because an earlier execution stage failed.");
     }
-    responsePayload = buildExecutionPayload(executionResult, startedAt, server.metrics(), trace.snapshot());
+    responsePayload = buildExecutionPayload(executionResult, startedAt, server.metrics(), trace.snapshot(), selectedConnectedClientId ?? null);
   } else if (parsedCommand && parsedCommand.action === "unknown") {
     trace.skipPending("Skipped because no supported tool matched the request.");
     responsePayload = {

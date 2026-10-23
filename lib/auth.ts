@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import type { PrismaClient } from "@prisma/client";
 import { verifyToken, hashSessionToken } from "./jwt";
 import { UserRole } from "@prisma/client";
 import { AuthenticationServiceError, UnauthorizedError } from "./errors";
@@ -20,7 +21,12 @@ export async function authenticate(req: NextRequest): Promise<AuthUser> {
   return authenticateToken(token);
 }
 
-export async function authenticateToken(token: string | undefined): Promise<AuthUser> {
+type AuthSessionStore = Pick<PrismaClient, "session" | "user">;
+
+export async function authenticateToken(
+  token: string | undefined,
+  db: AuthSessionStore = prisma,
+): Promise<AuthUser> {
   if (!token) {
     throw new UnauthorizedError("Authentication required.");
   }
@@ -29,21 +35,11 @@ export async function authenticateToken(token: string | undefined): Promise<Auth
   if (!tokenUser.id) throw new UnauthorizedError("Invalid authentication token.");
   let session;
   try {
-    session = await prisma.session.findUnique({
+    session = await db.session.findUnique({
       where: { token: hashSessionToken(token) },
       select: {
         userId: true,
         expiresAt: true,
-        user: {
-          select: {
-            id: true,
-            email: true,
-            role: true,
-            active: true,
-            companyId: true,
-            company: { select: { id: true } },
-          },
-        },
       },
     });
   } catch (error) {
@@ -52,14 +48,28 @@ export async function authenticateToken(token: string | undefined): Promise<Auth
   if (
     !session ||
     session.userId !== tokenUser.id ||
-    session.expiresAt <= new Date() ||
-    session.user.id !== session.userId
+    session.expiresAt <= new Date()
   ) {
     throw new UnauthorizedError("Session is no longer valid.");
   }
 
   // Role and company always come from the current database record.
-  const user = session.user;
+  let user;
+  try {
+    user = await db.user.findUnique({
+      where: { id: session.userId },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        active: true,
+        companyId: true,
+        company: { select: { id: true } },
+      },
+    });
+  } catch (error) {
+    throw new AuthenticationServiceError("Authentication service unavailable. Please try again later.", error);
+  }
   if (!user || !user.active || !user.company || user.company.id !== user.companyId) {
     throw new UnauthorizedError("User account or company association is unavailable.");
   }

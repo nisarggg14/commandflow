@@ -11,6 +11,9 @@ export function createCommandServer(
   connectedClientId?: string,
   enabledToolNames?: string[],
   requestId?: string,
+  approvalId?: string,
+  conversationId?: string,
+  originalCommand?: string,
 ) {
   const context = createMcpContext({
     userId,
@@ -19,7 +22,10 @@ export function createCommandServer(
     requestId,
     logger: () => undefined,
     mfaChallengeToken,
+    approvalId,
     connectedClientId,
+    conversationId,
+    originalCommand,
   });
 
   const server = new CommandFlowMCPServer(context);

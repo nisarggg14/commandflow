@@ -365,6 +365,7 @@ interface GeminiRetryOptions {
   requestTimeoutMs?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
+  retryRateLimited?: boolean;
   now?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
   random?: () => number;
@@ -390,6 +391,7 @@ export async function retryGeminiRequest<T>(
   const requestTimeoutMs = options.requestTimeoutMs ?? GEMINI_REQUEST_TIMEOUT_MS;
   const baseDelayMs = options.baseDelayMs ?? GEMINI_RETRY_BASE_DELAY_MS;
   const maxDelayMs = options.maxDelayMs ?? GEMINI_RETRY_MAX_DELAY_MS;
+  const retryRateLimited = options.retryRateLimited ?? true;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const random = options.random ?? Math.random;
@@ -440,6 +442,9 @@ export async function retryGeminiRequest<T>(
       if (category === "permanent") throw error;
 
       lastCategory = category;
+      if (category === "rate_limited" && !retryRateLimited) {
+        throw new GeminiQuotaError();
+      }
       if (attempts >= maxAttempts) break;
 
       const exponentialCap = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempts - 1));
@@ -546,7 +551,7 @@ export async function generateResponse(
         timeout: GEMINI_REQUEST_TIMEOUT_MS,
         maxRetries: 0,
       }),
-      { model: MODEL, sensitiveValues: [apiKey, prompt, ...sensitiveValues] },
+      { model: MODEL, sensitiveValues: [apiKey, prompt, ...sensitiveValues], retryRateLimited: false },
     );
 
     return {
@@ -554,7 +559,7 @@ export async function generateResponse(
       text: response.output_text ?? "",
     };
   } catch (error) {
-    if (error instanceof GeminiTemporaryUnavailableError) throw error;
+    if (error instanceof GeminiTemporaryUnavailableError || error instanceof GeminiQuotaError) throw error;
     const diagnosticSensitiveValues = [apiKey, prompt, ...sensitiveValues];
     const details = getGeminiFailureDetails(error, diagnosticSensitiveValues);
     const original = error && typeof error === "object"

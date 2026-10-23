@@ -3,6 +3,8 @@ import type { PrismaClient } from "@prisma/client";
 import { ApprovalStatus } from "@prisma/client";
 import { validateAndConsumeMfaChallenge } from "@/lib/mfa";
 import { redactAuditValue } from "@/lib/audit-redaction";
+import { ADMIN_SELF_APPROVAL_DISABLED_MESSAGE, isSelfApprovalAllowed } from "@/lib/approval-policy";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationFailedError } from "@/lib/errors";
 
 export interface CreateApprovalRequestInput {
   prisma: PrismaClient;
@@ -15,6 +17,9 @@ export interface CreateApprovalRequestInput {
   approverId?: string;
   status?: string;
   expiresInMs?: number;
+  conversationId?: string;
+  originalCommand?: string;
+  connectedClientId?: string;
 }
 
 export interface NormalizedApprovalData {
@@ -162,6 +167,46 @@ export function summarizeApprovalArguments(toolName: string, argumentsObject: un
     .join(", ");
 }
 
+export async function updateApprovalConversationMessage(
+  prisma: PrismaClient,
+  approvalId: string,
+  approvalStatus: "APPROVED" | "REJECTED",
+  message: string,
+) {
+  const approval = await (prisma.approval as any).findUnique({
+    where: { id: approvalId },
+    select: { conversationId: true },
+  }) as { conversationId?: string | null } | null;
+  if (!approval?.conversationId) return;
+
+  const messages = await prisma.message.findMany({
+    where: { conversationId: approval.conversationId, role: "ASSISTANT" },
+    orderBy: { createdAt: "desc" },
+    take: 25,
+  });
+  const original = messages.find((item) => {
+    try {
+      const payload = JSON.parse(item.content) as { approvalId?: unknown };
+      return payload.approvalId === approvalId;
+    } catch {
+      return false;
+    }
+  });
+  if (!original) return;
+
+  try {
+    const payload = JSON.parse(original.content) as Record<string, unknown>;
+    payload.approvalStatus = approvalStatus;
+    payload.message = message;
+    await prisma.message.update({
+      where: { id: original.id },
+      data: { content: JSON.stringify(payload) },
+    });
+  } catch {
+    // A malformed historical message must not affect the approval decision.
+  }
+}
+
 export async function createApprovalRequest({
   prisma,
   requesterId,
@@ -173,6 +218,9 @@ export async function createApprovalRequest({
   approverId,
   status,
   expiresInMs = 10 * 60 * 1000,
+  conversationId,
+  originalCommand,
+  connectedClientId,
 }: CreateApprovalRequestInput) {
   if (!requesterId || !requesterId.trim()) {
     throw new Error("Requester identity is required to create an approval.");
@@ -216,18 +264,38 @@ export async function createApprovalRequest({
     argumentsObject: argumentsPayload,
   });
 
+  const existingApproval = await (prisma.approval as any).findFirst({
+    where: {
+      companyId,
+      requesterId,
+      toolName,
+      ...(conversationId ? { conversationId } : { conversationId: null }),
+      ...(connectedClientId ? { connectedClientId } : { connectedClientId: null }),
+      argumentsHash: approvalHash,
+      status: ApprovalStatus.PENDING,
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (existingApproval) return existingApproval;
+
   const approval = await prisma.approval.create({
     data: {
       companyId,
       requesterId,
+      ...(conversationId ? { conversationId } : {}),
       toolName,
       riskLevel: normalizedRiskLevel,
       purpose: normalizedPurpose,
       argumentsHash: approvalHash,
+      argumentsJson: JSON.stringify(argumentsPayload),
+      ...(originalCommand ? { originalCommand } : {}),
+      ...(connectedClientId ? { connectedClientId } : {}),
       safeArgumentsSummary: summarizeApprovalArguments(toolName, argumentsPayload),
       status: ApprovalStatus.PENDING,
       expiresAt: new Date(Date.now() + expiresInMs),
-    },
+    } as any,
   });
 
   await prisma.activityLog.create({
@@ -268,7 +336,7 @@ export async function getApprovalById(prisma: PrismaClient, id: string, companyI
 }
 
 export async function listPendingApprovals(prisma: PrismaClient, companyId: string) {
-  return prisma.approval.findMany({
+  const approvals = await prisma.approval.findMany({
     where: {
       companyId,
       status: ApprovalStatus.PENDING,
@@ -276,8 +344,63 @@ export async function listPendingApprovals(prisma: PrismaClient, companyId: stri
         gt: new Date(),
       },
     },
+    include: {
+      requester: { select: { id: true, name: true, email: true, role: true } },
+    },
     orderBy: { createdAt: "asc" },
   });
+
+  const connectedClientIds = approvals
+    .map((approval) => extractConnectedClientId(approval.purpose))
+    .filter((id): id is string => Boolean(id));
+  const connectedClients = connectedClientIds.length > 0
+    ? await prisma.connectedClient.findMany({
+      where: { companyId, id: { in: connectedClientIds } },
+      select: { id: true, name: true, slug: true },
+    })
+    : [];
+  const clientsById = new Map(connectedClients.map((client) => [client.id, client]));
+
+  return approvals.map((approval) => ({
+    id: approval.id,
+    toolName: approval.toolName,
+    riskLevel: approval.riskLevel,
+    safeArgumentsSummary: approval.safeArgumentsSummary,
+    status: approval.status,
+    expiresAt: approval.expiresAt,
+    createdAt: approval.createdAt,
+    approvedAt: approval.approvedAt,
+    rejectedAt: approval.rejectedAt,
+    executedAt: approval.executedAt,
+    requester: approval.requester,
+    connectedClient: (() => {
+      const clientId = extractConnectedClientId(approval.purpose);
+      return clientId ? (clientsById.get(clientId) ?? { id: clientId, name: "Unavailable client", slug: null }) : null;
+    })(),
+  }));
+}
+
+function extractConnectedClientId(purpose: string): string | undefined {
+  const match = purpose.match(/:client:([^:]+)$/);
+  return match?.[1];
+}
+
+async function expirePendingApprovalIfNeeded(
+  prisma: PrismaClient,
+  approvalId: string,
+  companyId: string,
+): Promise<boolean> {
+  const approval = await prisma.approval.findFirst({
+    where: { id: approvalId, companyId },
+    select: { id: true, status: true, expiresAt: true },
+  });
+  if (!approval || approval.status !== ApprovalStatus.PENDING || approval.expiresAt > new Date()) return false;
+
+  await prisma.approval.updateMany({
+    where: { id: approval.id, companyId, status: ApprovalStatus.PENDING },
+    data: { status: ApprovalStatus.EXPIRED },
+  });
+  return true;
 }
 
 export async function approveApproval({
@@ -294,11 +417,15 @@ export async function approveApproval({
   mfaChallengeToken?: string;
 }) {
   if (!approvalId || !approvalId.trim()) {
-    throw new Error("A valid approval id is required.");
+    throw new ValidationFailedError("A valid approval id is required.");
   }
 
   if (!approverId || !approverId.trim()) {
-    throw new Error("A valid approver is required.");
+    throw new ValidationFailedError("A valid approver is required.");
+  }
+
+  if (await expirePendingApprovalIfNeeded(prisma, approvalId, companyId)) {
+    throw new ConflictError("Approval has expired and cannot be approved.");
   }
 
   return prisma.$transaction(async (tx) => {
@@ -310,7 +437,7 @@ export async function approveApproval({
     });
 
     if (!approval) {
-      throw new Error("Approval not found.");
+      throw new NotFoundError("Approval not found.");
     }
 
     const approverRecord = await tx.user.findUnique({
@@ -319,39 +446,39 @@ export async function approveApproval({
     });
 
     if (!approverRecord) {
-      throw new Error("Approver not found.");
+      throw new ForbiddenError("Approver is not authorized for this approval.");
     }
 
     if (approverRecord.role !== "ADMIN") {
-      throw new Error("Only ADMIN users can approve high-risk requests.");
+      throw new ForbiddenError("Only ADMIN users can approve high-risk requests.");
     }
 
     if (approverRecord.companyId !== approval.companyId || approverRecord.companyId !== companyId) {
-      throw new Error("Approval company does not match the approver's company context.");
+      throw new ForbiddenError("Approval company does not match the approver's company context.");
     }
 
-    if (approval.requesterId === approverId) {
-      throw new Error("Requesters cannot approve their own destructive action.");
+    if (!isSelfApprovalAllowed({
+      requesterId: approval.requesterId,
+      approverId,
+      approverRole: approverRecord.role,
+    })) {
+      throw new ForbiddenError(ADMIN_SELF_APPROVAL_DISABLED_MESSAGE);
     }
 
     if (approval.status !== ApprovalStatus.PENDING) {
-      throw new Error(`Approval cannot be approved from status ${approval.status}.`);
+      throw new ConflictError(`Approval cannot be approved from status ${approval.status}.`);
     }
 
     if (approval.expiresAt <= new Date()) {
-      await tx.approval.update({
-        where: { id: approval.id },
-        data: { status: ApprovalStatus.EXPIRED },
-      });
-      throw new Error("Approval has expired and cannot be approved.");
+      throw new ConflictError("Approval has expired and cannot be approved.");
     }
 
     if (!approverRecord.mfaEnabled || !approverRecord.mfaSecret) {
-      throw new Error("Approver MFA is required to approve a high-risk request.");
+      throw new ForbiddenError("Approver MFA is required to approve a high-risk request.");
     }
 
     if (!mfaChallengeToken || !mfaChallengeToken.trim()) {
-      throw new Error("A valid MFA challenge is required to approve a high-risk request.");
+      throw new ValidationFailedError("A valid MFA challenge is required to approve a high-risk request.");
     }
 
     await validateAndConsumeMfaChallenge(tx as unknown as PrismaClient, {
@@ -374,7 +501,7 @@ export async function approveApproval({
     });
 
     if (updated.count !== 1) {
-      throw new Error("Approval was already approved or changed state.");
+      throw new ConflictError("Approval was already approved or changed state.");
     }
 
     const approvedApproval = await tx.approval.findUnique({
@@ -382,8 +509,15 @@ export async function approveApproval({
     });
 
     if (!approvedApproval) {
-      throw new Error("Approval could not be reloaded after approval.");
+      throw new ConflictError("Approval could not be reloaded after approval.");
     }
+
+    await updateApprovalConversationMessage(
+      tx as unknown as PrismaClient,
+      approvedApproval.id,
+      "APPROVED",
+      "Administrator approval granted. Complete requester MFA to continue the original operation.",
+    );
 
     await tx.activityLog.create({
       data: {
@@ -419,6 +553,10 @@ export async function rejectApproval({
   companyId: string;
   reason?: string;
 }) {
+  if (await expirePendingApprovalIfNeeded(prisma, approvalId, companyId)) {
+    throw new ConflictError("Approval has expired and cannot be rejected.");
+  }
+
   return prisma.$transaction(async (tx) => {
     const approval = await tx.approval.findFirst({
       where: {
@@ -428,11 +566,26 @@ export async function rejectApproval({
     });
 
     if (!approval) {
-      throw new Error("Approval not found.");
+      throw new NotFoundError("Approval not found.");
+    }
+
+    const approver = await tx.user.findUnique({
+      where: { id: approverId },
+      select: { id: true, role: true, companyId: true },
+    });
+    if (!approver || approver.role !== "ADMIN") {
+      throw new ForbiddenError("Only ADMIN users can reject high-risk requests.");
+    }
+    if (approver.companyId !== approval.companyId || approver.companyId !== companyId) {
+      throw new ForbiddenError("Approval company does not match the approver's company context.");
     }
 
     if (approval.status !== ApprovalStatus.PENDING) {
-      throw new Error(`Approval cannot be rejected from status ${approval.status}.`);
+      throw new ConflictError(`Approval cannot be rejected from status ${approval.status}.`);
+    }
+
+    if (approval.expiresAt <= new Date()) {
+      throw new ConflictError("Approval has expired and cannot be rejected.");
     }
 
     const updated = await tx.approval.updateMany({
@@ -448,12 +601,19 @@ export async function rejectApproval({
     });
 
     if (updated.count !== 1) {
-      throw new Error("Approval was already updated and cannot be rejected.");
+      throw new ConflictError("Approval was already updated and cannot be rejected.");
     }
 
     const finalApproval = await tx.approval.findUnique({
       where: { id: approval.id },
     });
+
+    await updateApprovalConversationMessage(
+      tx as unknown as PrismaClient,
+      approval.id,
+      "REJECTED",
+      "Administrator rejected this operation. It was not executed.",
+    );
 
     await tx.activityLog.create({
       data: {
@@ -663,5 +823,8 @@ export async function claimApprovalForExecution(prisma: PrismaClient, approvalId
 }
 
 export async function markApprovalFailed(prisma: PrismaClient, approvalId: string, companyId: string) {
-  await prisma.approval.updateMany({ where: { id: approvalId, companyId, status: "EXECUTING" as any }, data: { status: "FAILED" as any } });
+  return prisma.approval.updateMany({
+    where: { id: approvalId, companyId, status: "EXECUTING" as any },
+    data: { status: "FAILED" as any },
+  });
 }

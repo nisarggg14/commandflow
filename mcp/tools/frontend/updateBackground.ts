@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { Permission, RiskLevel, ToolCategory, type MCPTool } from "../../types";
+import { BACKGROUND_VALUES } from "../ui/background-values";
 
-const inputSchema = z.object({ background: z.enum(["obsidian", "paper", "mist"]) }).strict();
+const inputSchema = z.object({ background: z.enum(BACKGROUND_VALUES) }).strict();
 
 export function createUpdateBackgroundTool(): MCPTool {
   return {

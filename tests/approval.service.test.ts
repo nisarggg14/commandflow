@@ -55,6 +55,65 @@ test("createApprovalRequest rejects a client-supplied approver or company id", a
   );
 });
 
+test("createApprovalRequest reuses an identical live pending request", async () => {
+  const existing = { id: "approval-1", status: "PENDING" };
+  let createCalls = 0;
+  const fakePrisma = {
+    user: { findUnique: async () => ({ id: "req-1", companyId: "company-1", role: "ADMIN" }) },
+    approval: {
+      findFirst: async () => existing,
+      create: async () => { createCalls += 1; return existing; },
+    },
+    activityLog: { create: async () => undefined },
+  } as never;
+
+  const result = await createApprovalRequest({
+    prisma: fakePrisma,
+    requesterId: "req-1",
+    companyId: "company-1",
+    toolName: "products.deleteProduct",
+    argumentsObject: { productId: "P1001" },
+    purpose: "products.deleteProduct:client:client-1",
+    riskLevel: "HIGH",
+  });
+
+  assert.equal(result, existing);
+  assert.equal(createCalls, 0);
+});
+
+test("createApprovalRequest persists durable continuation context", async () => {
+  let created: Record<string, unknown> | undefined;
+  const fakePrisma = {
+    user: { findUnique: async () => ({ id: "req-1", companyId: "company-1", role: "ADMIN" }) },
+    approval: {
+      findFirst: async () => null,
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        created = data;
+        return { id: "approval-1", ...data, safeArgumentsSummary: "safe" };
+      },
+    },
+    activityLog: { create: async () => undefined },
+  } as never;
+
+  await createApprovalRequest({
+    prisma: fakePrisma,
+    requesterId: "req-1",
+    companyId: "company-1",
+    toolName: "products.deleteProduct",
+    argumentsObject: { productId: "P1001" },
+    purpose: "products.deleteProduct:client:client-1",
+    riskLevel: "HIGH",
+    conversationId: "conversation-1",
+    originalCommand: "delete product P1001",
+    connectedClientId: "client-1",
+  });
+
+  assert.equal(created?.conversationId, "conversation-1");
+  assert.equal(created?.originalCommand, "delete product P1001");
+  assert.equal(created?.connectedClientId, "client-1");
+  assert.equal(created?.argumentsJson, JSON.stringify({ productId: "P1001" }));
+});
+
 test("validateApprovalForExecution rejects mismatched execution payload", async () => {
   const approval = {
     id: "app-1",

@@ -179,13 +179,70 @@ test("4. Unauthenticated user cannot access approvals", async () => {
 });
 
 test("5. Requester cannot approve own request", async () => {
+  const previous = process.env.ALLOW_ADMIN_SELF_APPROVAL;
+  process.env.ALLOW_ADMIN_SELF_APPROVAL = "false";
   const { company, requester } = await createUserSet();
   const approval = await createHighRiskApproval(prisma, requester.id, company.id);
 
-  await assert.rejects(
-    () => approveApproval({ prisma, approvalId: approval.id, approverId: requester.id, companyId: company.id }),
-    /cannot approve|own/i
-  );
+  try {
+    await assert.rejects(
+      () => approveApproval({ prisma, approvalId: approval.id, approverId: requester.id, companyId: company.id }),
+      /self-approval|disabled/i
+    );
+  } finally {
+    if (previous === undefined) delete process.env.ALLOW_ADMIN_SELF_APPROVAL;
+    else process.env.ALLOW_ADMIN_SELF_APPROVAL = previous;
+  }
+});
+
+test("5a. ADMIN requester can approve own request only when enabled and MFA challenge is valid", async () => {
+  const previous = process.env.ALLOW_ADMIN_SELF_APPROVAL;
+  process.env.ALLOW_ADMIN_SELF_APPROVAL = "true";
+  const { company, requester } = await createUserSet();
+  const approval = await createHighRiskApproval(prisma, requester.id, company.id);
+  const challenge = createChallengeToken();
+
+  try {
+    await prisma.mfaChallenge.create({
+      data: {
+        userId: requester.id,
+        purpose: `approval:${approval.id}:approve`,
+        riskLevel: "HIGH",
+        challengeToken: challenge,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const approved = await approveApproval({
+      prisma,
+      approvalId: approval.id,
+      approverId: requester.id,
+      companyId: company.id,
+      mfaChallengeToken: challenge,
+    });
+
+    assert.equal(approved.status, ApprovalStatus.APPROVED);
+  } finally {
+    if (previous === undefined) delete process.env.ALLOW_ADMIN_SELF_APPROVAL;
+    else process.env.ALLOW_ADMIN_SELF_APPROVAL = previous;
+  }
+});
+
+test("5b. MANAGER self-approval remains denied even when enabled", async () => {
+  const previous = process.env.ALLOW_ADMIN_SELF_APPROVAL;
+  process.env.ALLOW_ADMIN_SELF_APPROVAL = "true";
+  const { company, manager } = await createUserSet();
+  const approval = await createHighRiskApproval(prisma, manager.id, company.id);
+
+  try {
+    await assert.rejects(
+      () => approveApproval({ prisma, approvalId: approval.id, approverId: manager.id, companyId: company.id }),
+      /ADMIN|approve/i,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.ALLOW_ADMIN_SELF_APPROVAL;
+    else process.env.ALLOW_ADMIN_SELF_APPROVAL = previous;
+  }
 });
 
 test("6. Cross-company approval is rejected", async () => {
@@ -312,6 +369,31 @@ test("13. Already approved approval cannot be approved again", async () => {
     () => approveApproval({ prisma, approvalId: approval.id, approverId: admin.id, companyId: company.id }),
     /cannot be approved|status/i
   );
+});
+
+test("13a. Repeated rejection returns a clear conflict", async () => {
+  const { company, requester, admin } = await createUserSet();
+  const approval = await createHighRiskApproval(prisma, requester.id, company.id);
+
+  await rejectApproval({ prisma, approvalId: approval.id, approverId: admin.id, companyId: company.id });
+
+  await assert.rejects(
+    () => rejectApproval({ prisma, approvalId: approval.id, approverId: admin.id, companyId: company.id }),
+    /cannot be rejected|REJECTED|changed state/i,
+  );
+});
+
+test("13b. Expired pending rejection transitions safely to EXPIRED", async () => {
+  const { company, requester, admin } = await createUserSet();
+  const approval = await createHighRiskApproval(prisma, requester.id, company.id);
+  await prisma.approval.update({ where: { id: approval.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+
+  await assert.rejects(
+    () => rejectApproval({ prisma, approvalId: approval.id, approverId: admin.id, companyId: company.id }),
+    /expired|cannot be rejected/i,
+  );
+  const expired = await prisma.approval.findUnique({ where: { id: approval.id }, select: { status: true } });
+  assert.equal(expired?.status, ApprovalStatus.EXPIRED);
 });
 
 test("14. Admin without MFA cannot approve HIGH-risk action", async () => {
@@ -503,7 +585,7 @@ test("25. Unapproved delete never calls Inventory DELETE", async () => {
   const server = createCommandServer(requester.id, company.id, Permission.ADMIN);
   const result = await server.executeTool("products.deleteProduct", { productId: "P1001" });
   assert.equal(result.success, false);
-  assert.match(result.message ?? "", /approval|High-risk/i);
+  assert.match(result.message ?? "", /approval|High-risk|target client/i);
 });
 
 test("26. Failed approval never calls Inventory DELETE", async () => {

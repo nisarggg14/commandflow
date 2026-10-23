@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ForbiddenError } from "@/lib/errors";
+import { ConflictError, ForbiddenError, MfaChallengeError, NotFoundError, ValidationFailedError } from "@/lib/errors";
 
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { authenticate } from "@/lib/auth";
@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { approveApproval } from "@/services/approval.service";
 import { consumeTotpStep, verifyTotpCodeWithTimeStep, decryptSecret, createChallengeToken } from "@/lib/mfa";
 import { safeApiErrorResponse } from "@/lib/api-error-response";
+import { ADMIN_SELF_APPROVAL_DISABLED_MESSAGE, isSelfApprovalAllowed } from "@/lib/approval-policy";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -21,6 +22,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     if (authUser.role !== "ADMIN") {
       throw new ForbiddenError("Only ADMIN users can approve high-risk requests.");
+    }
+
+    const approvalForAuthorization = await prisma.approval.findFirst({
+      where: { id, companyId: authUser.companyId },
+      select: { requesterId: true },
+    });
+    if (approvalForAuthorization && !isSelfApprovalAllowed({
+      requesterId: approvalForAuthorization.requesterId,
+      approverId: authUser.id,
+      approverRole: authUser.role,
+    })) {
+      throw new ForbiddenError(ADMIN_SELF_APPROVAL_DISABLED_MESSAGE);
     }
 
     const approver = await prisma.user.findUnique({
@@ -65,6 +78,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ success: true, approval });
   } catch (error) {
+    if (
+      error instanceof ConflictError ||
+      error instanceof ForbiddenError ||
+      error instanceof MfaChallengeError ||
+      error instanceof NotFoundError ||
+      error instanceof ValidationFailedError
+    ) {
+      console.warn("[api.approvals.approve] request rejected", {
+        errorName: error.name,
+        errorMessage: error.message,
+      });
+    }
     return safeApiErrorResponse(error, "api.approvals.approve", "Approval could not be processed.", 400);
   }
 }

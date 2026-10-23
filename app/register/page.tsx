@@ -26,10 +26,15 @@ export default function RegisterPage() {
     setIsLoading(true)
 
     try {
+      const payload = {
+        ...form,
+        companyName: form.companyName.trim(),
+        invitationCode: form.invitationCode.trim(),
+      }
       const response = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       })
 
       const data = await response.json()

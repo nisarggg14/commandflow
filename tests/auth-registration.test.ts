@@ -172,10 +172,45 @@ test("invitation-code signup joins the matched company as regular User", async (
   assert.equal("invitationCodeHash" in response.company, false);
 });
 
+test("invitation-code signup accepts harmless pasted whitespace", async () => {
+  const invitationCode = "company-join-code-that-is-not-a-secret";
+  const company = {
+    id: "company-existing",
+    name: "Northwind",
+    slug: "northwind",
+    invitationCodeHash: createHash("sha256").update(invitationCode).digest("hex"),
+  };
+  const state = registrationDatabase(company);
+  const response = await registerUser(registrationInput({
+    companyName: "   ",
+    invitationCode: " company-join-code-\nthat-is-not-a-secret ",
+    email: "pasted-member@example.test",
+  }), state.db);
+
+  assert.equal(response.user.role, UserRole.VIEWER);
+  assert.equal(response.company.id, company.id);
+});
+
 test("invalid invitation codes are rejected without creating a user", async () => {
   const state = registrationDatabase();
   await assert.rejects(
     () => registerUser(registrationInput({ companyName: "", invitationCode: "incorrect-code" }), state.db),
+    new RegExp(INVALID_INVITATION_CODE_MESSAGE),
+  );
+  assert.equal(state.users.length, 0);
+});
+
+test("rotating an invitation code revokes the previous code", async () => {
+  const oldCode = "old-company-join-code";
+  const state = registrationDatabase({
+    id: "company-existing",
+    name: "Northwind",
+    slug: "northwind",
+    invitationCodeHash: createHash("sha256").update("new-company-join-code").digest("hex"),
+  });
+
+  await assert.rejects(
+    () => registerUser(registrationInput({ companyName: "", invitationCode: oldCode, email: "revoked@example.test" }), state.db),
     new RegExp(INVALID_INVITATION_CODE_MESSAGE),
   );
   assert.equal(state.users.length, 0);

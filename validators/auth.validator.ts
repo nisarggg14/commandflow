@@ -7,7 +7,10 @@ export const registerSchema = z
     email: z.string().email("Invalid email address"),
     password: z.string().min(8, "Password must be at least 8 characters"),
     confirmPassword: z.string().min(8, "Please confirm your password"),
-    invitationCode: z.string().trim().max(128).optional().or(z.literal("")),
+    invitationCode: z.preprocess(
+      (value) => typeof value === "string" ? value.replace(/\s+/g, "") : value,
+      z.string().max(128).optional().or(z.literal("")),
+    ),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: "Passwords do not match",

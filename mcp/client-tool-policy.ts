@@ -22,6 +22,7 @@ export const CONNECTED_CLIENT_REQUIRED_TOOL_NAMES = [
   "products.updateStock",
   "products.adjustPrice",
   "products.deleteProduct",
+  "ui.setBackground",
   "analytics.inventorySummary",
   "analytics.lowStockReport",
   "orders.getOrders",

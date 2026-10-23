@@ -3,6 +3,7 @@ import { ApprovalStatus } from "@prisma/client";
 import { validateAndConsumeMfaChallenge } from "@/lib/mfa";
 import {
   createApprovalRequest,
+  computeApprovalHash,
   validateApprovalForExecution,
   markApprovalExecuted,
 
@@ -124,17 +125,56 @@ export class CommandFlowMCPServer {
         : baseApprovalPurpose;
 
       if (riskLevel === "HIGH") {
+        const approvalHash = computeApprovalHash({
+          toolName: tool.name,
+          requesterId: this.context.userId,
+          companyId: this.context.companyId,
+          purpose: approvalPurpose,
+          riskLevel,
+          argumentsObject: parsedInput,
+        });
+        // Resolve an explicitly supplied approval independently of the
+        // execution hash so an expired id cannot be hidden as a generic
+        // "not available" result when the command has changed.
+        if (this.context.approvalId) {
+          const suppliedApproval = await this.context.prisma.approval.findFirst({
+            where: {
+              id: this.context.approvalId,
+              companyId: this.context.companyId,
+              requesterId: this.context.userId,
+            },
+          });
+
+          if (suppliedApproval && (
+            suppliedApproval.status === ApprovalStatus.EXPIRED
+            || suppliedApproval.expiresAt <= new Date()
+          )) {
+            throw new PermissionDeniedError("The selected approval has expired. Submit the command again to request fresh approval.");
+          }
+        }
+
         const existingApproval = await this.context.prisma.approval.findFirst({
           where: {
+            ...(this.context.approvalId ? { id: this.context.approvalId } : {}),
             companyId: this.context.companyId,
             requesterId: this.context.userId,
             toolName: tool.name,
             purpose: approvalPurpose,
             riskLevel,
+            argumentsHash: approvalHash,
             status: { in: [ApprovalStatus.APPROVED, ApprovalStatus.PENDING] },
+            ...(!this.context.approvalId ? { expiresAt: { gt: new Date() } } : {}),
           },
           orderBy: { createdAt: "desc" },
         });
+
+        if (this.context.approvalId && existingApproval && existingApproval.expiresAt <= new Date()) {
+          throw new PermissionDeniedError("The selected approval has expired. Submit the command again to request fresh approval.");
+        }
+
+        if (this.context.approvalId && (!existingApproval || existingApproval.status !== ApprovalStatus.APPROVED)) {
+          throw new PermissionDeniedError("The selected approval is not approved or no longer available for execution.");
+        }
 
         if (!existingApproval || existingApproval.status !== ApprovalStatus.APPROVED) {
           const createdApproval = await createApprovalRequest({
@@ -145,6 +185,9 @@ export class CommandFlowMCPServer {
             argumentsObject: parsedInput,
             purpose: approvalPurpose,
             riskLevel,
+            conversationId: this.context.conversationId,
+            originalCommand: this.context.originalCommand,
+            connectedClientId: this.context.connectedClientId,
           });
 
           approvalId = createdApproval.id;
@@ -194,7 +237,17 @@ export class CommandFlowMCPServer {
         });
         this.context.mfaVerified = true;
         mfaResult = "SUCCESS";
-        if (approvalId) await claimApprovalForExecution(this.context.prisma, approvalId, this.context.companyId);
+        if (approvalId) {
+          console.info("[mcp.approval] state transition", {
+            requestId: this.context.requestId,
+            approvalId,
+            toolName: tool.name,
+            connectedClientId: this.context.connectedClientId ?? null,
+            from: "APPROVED",
+            to: "EXECUTING",
+          });
+          await claimApprovalForExecution(this.context.prisma, approvalId, this.context.companyId);
+        }
       }
 
       validationCompleted = true;
@@ -210,6 +263,14 @@ export class CommandFlowMCPServer {
 
       if (approvalId) {
         await markApprovalExecuted(this.context.prisma, approvalId, this.context.companyId);
+        console.info("[mcp.approval] state transition", {
+          requestId: this.context.requestId,
+          approvalId,
+          toolName: tool.name,
+          connectedClientId: this.context.connectedClientId ?? null,
+          from: "EXECUTING",
+          to: "EXECUTED",
+        });
       }
 
       await this.log({
@@ -248,15 +309,39 @@ export class CommandFlowMCPServer {
         collectSensitiveInputStrings(input),
         this.context.requestId,
       );
+      const explicitApprovalExpired = Boolean(this.context.approvalId)
+        && /approval (?:has )?expired/i.test(internalMessage);
       const message = approvalRequired
         ? internalMessage
+        : explicitApprovalExpired
+          ? "The selected approval has expired. Submit the command again to request fresh approval."
         : error instanceof PermissionDeniedError || error instanceof ValidationError || error instanceof ToolNotFoundError
           ? internalMessage
           : error instanceof InventoryApiError
             ? error.message
           : "Tool execution failed. Please try again.";
 
-      if (approvalId && executionStarted) await markApprovalFailed(this.context.prisma, approvalId, this.context.companyId);
+      if (approvalId && executionStarted) {
+        try {
+          const failedTransition = await markApprovalFailed(this.context.prisma, approvalId, this.context.companyId);
+          console.warn("[mcp.approval] state transition", {
+            requestId: this.context.requestId,
+            approvalId,
+            toolName: name,
+            connectedClientId: this.context.connectedClientId ?? null,
+            from: "EXECUTING",
+            to: failedTransition.count === 1 ? "FAILED" : "UNCHANGED",
+          });
+        } catch (transitionError) {
+          console.error("[mcp.approval] failure transition unavailable", {
+            requestId: this.context.requestId,
+            approvalId,
+            toolName: name,
+            connectedClientId: this.context.connectedClientId ?? null,
+            errorName: transitionError instanceof Error ? transitionError.name : "UnknownError",
+          });
+        }
+      }
 
 
 
@@ -290,6 +375,7 @@ export class CommandFlowMCPServer {
         success: false,
         tool: name,
         ...(approvalRequired ? { outcome: "APPROVAL_REQUIRED" as const } : {}),
+        ...(approvalRequired && approvalId ? { approvalId } : {}),
         message,
         error: {
           name: error instanceof Error ? error.name : "ExecutionError",

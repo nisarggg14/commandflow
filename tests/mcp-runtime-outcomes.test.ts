@@ -16,10 +16,14 @@ function createServer(
     mfaChallengeToken?: string;
     validMfaChallenge?: boolean;
     executionFailure?: boolean;
+    approvalId?: string;
+    expiredApproval?: boolean;
+    mismatchedApproval?: boolean;
   } = {},
 ) {
   const auditEntries: Array<{ status: string; details?: string }> = [];
   const activityRows: Array<{ action: string; status: string; details: string }> = [];
+  let createCount = 0;
   const toolName = options.highRisk ? "test.highRisk" : "test.lowRisk";
   const approvalRecord = options.approved || options.rejected ? {
     id: "approval-1",
@@ -29,7 +33,7 @@ function createServer(
     toolName,
     riskLevel: "HIGH",
     purpose: toolName,
-    argumentsHash: computeApprovalHash({
+    argumentsHash: options.mismatchedApproval ? "different-command-hash" : computeApprovalHash({
       toolName,
       requesterId: "user-1",
       companyId: "company-1",
@@ -38,7 +42,7 @@ function createServer(
       argumentsObject: { value: "safe" },
     }),
     status: options.rejected ? "REJECTED" : "APPROVED",
-    expiresAt: new Date(Date.now() + 60_000),
+    expiresAt: new Date(Date.now() + (options.expiredApproval ? -60_000 : 60_000)),
     executedAt: null,
     approvedAt: new Date(),
     rejectedAt: null,
@@ -58,19 +62,24 @@ function createServer(
       findUnique: async () => ({ id: "user-1", companyId: "company-1", role: "ADMIN" }),
     },
     approval: {
-      findFirst: async ({ where }: { where: { status?: string | { in?: string[] } } }) => {
+      findFirst: async ({ where }: { where: { id?: string; status?: string | { in?: string[] }; expiresAt?: { gt?: Date } } }) => {
         if (!approvalRecord) return null;
+        if (where.id && where.id !== approvalRecord.id) return null;
+        if (where.expiresAt?.gt && approvalRecord.expiresAt <= where.expiresAt.gt) return null;
         const statusFilter = typeof where.status === "object" ? where.status.in : undefined;
         if (statusFilter && !statusFilter.includes(approvalRecord.status)) return null;
         if (typeof where.status === "string" && where.status !== approvalRecord.status) return null;
         return approvalRecord;
       },
-      create: async ({ data }: { data: Record<string, unknown> }) => ({
-        id: "approval-1",
-        ...data,
-        expiresAt: new Date(Date.now() + 60_000),
-        safeArgumentsSummary: "test operation",
-      }),
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        createCount += 1;
+        return {
+          id: options.expiredApproval ? "approval-fresh" : "approval-1",
+          ...data,
+          expiresAt: new Date(Date.now() + 60_000),
+          safeArgumentsSummary: "test operation",
+        };
+      },
       updateMany: async ({ where, data }: { where: { status?: string }; data: Record<string, unknown> }) => {
         if (!approvalRecord || (where.status && where.status !== approvalRecord.status)) return { count: 0 };
         Object.assign(approvalRecord, data);
@@ -111,6 +120,7 @@ function createServer(
     timestamp: new Date().toISOString(),
     prisma,
     mfaChallengeToken: options.mfaChallengeToken,
+    approvalId: options.approvalId,
     logger: (entry) => {
       auditEntries.push(entry);
     },
@@ -134,7 +144,13 @@ function createServer(
   };
   server.registerTool(tool);
 
-  return { server, auditEntries, activityRows, getDispatchCount: () => dispatchCount };
+  return {
+    server,
+    auditEntries,
+    activityRows,
+    getDispatchCount: () => dispatchCount,
+    getCreateCount: () => createCount,
+  };
 }
 
 test("valid low-risk requests reach mocked dispatch", async () => {
@@ -186,6 +202,7 @@ test("high-risk requests remain pending approval and are not counted as failures
 
   assert.equal(result.success, false);
   assert.equal(result.outcome, "APPROVAL_REQUIRED");
+  assert.equal(result.approvalId, "approval-1");
   assert.equal(getDispatchCount(), 0);
   assert.equal(auditEntries.at(-1)?.status, "PENDING");
   assert.equal(activityRows.at(-1)?.status, "PENDING");
@@ -197,6 +214,49 @@ test("high-risk requests remain pending approval and are not counted as failures
   assert.equal(metrics.pendingApprovals, 1);
   assert.ok(stages.includes("complete:tool-selection-validation"));
   assert.ok(!stages.includes("failed:tool-selection-validation"));
+});
+
+test("expired approvals are not reused and a new command creates a fresh pending request", async () => {
+  const { server, getDispatchCount, getCreateCount } = createServer(Permission.ADMIN, { highRisk: true, approved: true, expiredApproval: true });
+
+  const result = await server.executeTool("test.highRisk", { value: "safe" });
+
+  assert.equal(result.outcome, "APPROVAL_REQUIRED");
+  assert.equal(result.approvalId, "approval-fresh");
+  assert.equal(getCreateCount(), 1);
+  assert.match(result.message ?? "", /requires a separate administrator approval/i);
+  assert.equal(getDispatchCount(), 0);
+});
+
+test("a stale approval id is rejected with an expiry message and never dispatches", async () => {
+  const { server, getDispatchCount } = createServer(Permission.ADMIN, {
+    highRisk: true,
+    approved: true,
+    expiredApproval: true,
+    approvalId: "approval-1",
+  });
+
+  const result = await server.executeTool("test.highRisk", { value: "safe" });
+
+  assert.equal(result.success, false);
+  assert.match(result.message ?? "", /approval has expired|fresh approval/i);
+  assert.equal(getDispatchCount(), 0);
+});
+
+test("an expired explicit approval id is rejected even when its command hash no longer matches", async () => {
+  const { server, getDispatchCount } = createServer(Permission.ADMIN, {
+    highRisk: true,
+    approved: true,
+    expiredApproval: true,
+    mismatchedApproval: true,
+    approvalId: "approval-1",
+  });
+
+  const result = await server.executeTool("test.highRisk", { value: "safe" });
+
+  assert.equal(result.success, false);
+  assert.match(result.message ?? "", /approval has expired|fresh approval/i);
+  assert.equal(getDispatchCount(), 0);
 });
 
 test("a rejected prior approval never dispatches a high-risk operation", async () => {
@@ -235,6 +295,31 @@ test("valid mocked approval and MFA authorization allow only the mocked dispatch
   assert.equal(getDispatchCount(), 1);
   assert.equal(auditEntries.at(-1)?.status, "SUCCESS");
   assert.ok(activityRows.some((row) => row.action === "HIGH_RISK_EXECUTION" && row.status === "SUCCESS"));
+});
+
+test("approved continuation binds execution to the supplied approval id", async () => {
+  const approved = createServer(Permission.ADMIN, {
+    highRisk: true,
+    approved: true,
+    approvalId: "approval-1",
+    mfaChallengeToken: "challenge-1",
+    validMfaChallenge: true,
+  });
+  const completed = await approved.server.executeTool("test.highRisk", { value: "safe" });
+  assert.equal(completed.success, true);
+  assert.equal(approved.getDispatchCount(), 1);
+
+  const mismatched = createServer(Permission.ADMIN, {
+    highRisk: true,
+    approved: true,
+    approvalId: "approval-other",
+    mfaChallengeToken: "challenge-1",
+    validMfaChallenge: true,
+  });
+  const rejected = await mismatched.server.executeTool("test.highRisk", { value: "safe" });
+  assert.equal(rejected.success, false);
+  assert.match(rejected.message ?? "", /selected approval|approved/i);
+  assert.equal(mismatched.getDispatchCount(), 0);
 });
 
 test("mocked external operation errors remain failed and do not expose infrastructure details", async () => {

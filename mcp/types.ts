@@ -33,7 +33,10 @@ export interface MCPContext {
   logger: MCPLogger;
   mfaVerified?: boolean;
   mfaChallengeToken?: string;
+  approvalId?: string;
   connectedClientId?: string;
+  conversationId?: string;
+  originalCommand?: string;
 }
 
 export interface AuditLogEntry {
@@ -76,6 +79,7 @@ export interface ToolExecutionResult<T = unknown> {
   success: boolean;
   tool: string;
   outcome?: "APPROVAL_REQUIRED";
+  approvalId?: string;
   data?: T;
   message?: string;
   error?: {

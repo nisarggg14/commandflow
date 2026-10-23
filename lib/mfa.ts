@@ -2,6 +2,7 @@ import crypto from "crypto";
 import type { PrismaClient } from "@prisma/client";
 import { TOTP, NobleCryptoPlugin, ScureBase32Plugin } from "otplib";
 import QRCode from "qrcode";
+import { MfaChallengeError } from "@/lib/errors";
 
 const cryptoPlugin = new NobleCryptoPlugin();
 const base32Plugin = new ScureBase32Plugin();
@@ -170,7 +171,7 @@ export async function validateAndConsumeMfaChallenge(
   { userId, challengeToken, purpose, riskLevel }: ConsumeMfaChallengeInput
 ): Promise<{ id: string; userId: string; purpose: string; riskLevel: string | null; challengeToken: string; expiresAt: Date; verifiedAt: Date | null }> {
   if (!userId || !challengeToken || !purpose) {
-    throw new Error("A valid MFA challenge is required.");
+    throw new MfaChallengeError("A valid MFA challenge is required.");
   }
 
   const execute = async (client: PrismaClient | any) => {
@@ -179,11 +180,11 @@ export async function validateAndConsumeMfaChallenge(
     });
 
     if (!challenge) {
-      throw new Error("Invalid MFA challenge.");
+      throw new MfaChallengeError("Invalid MFA challenge.");
     }
 
     if (challenge.userId !== userId) {
-      throw new Error("MFA challenge does not belong to this user.");
+      throw new MfaChallengeError("MFA challenge does not belong to this user.");
     }
 
     // The generic MFA endpoint can only prove possession of the user's TOTP
@@ -191,20 +192,20 @@ export async function validateAndConsumeMfaChallenge(
     // the server-derived tool/approval purpose at consumption time. Existing
     // purpose-specific challenges still require an exact match.
     if (challenge.purpose !== purpose && challenge.purpose !== GENERIC_STEP_UP_MFA_PURPOSE) {
-      throw new Error("MFA challenge purpose does not match this operation.");
+      throw new MfaChallengeError("MFA challenge purpose does not match this operation.");
     }
 
     if (challenge.verifiedAt) {
-      throw new Error("MFA challenge has already been consumed.");
+      throw new MfaChallengeError("MFA challenge has already been consumed.");
     }
 
     if (challenge.expiresAt <= new Date()) {
-      throw new Error("MFA challenge has expired.");
+      throw new MfaChallengeError("MFA challenge has expired.");
     }
 
     const normalizedRiskLevel = riskLevel?.toUpperCase();
     if (normalizedRiskLevel && challenge.riskLevel && challenge.riskLevel !== normalizedRiskLevel) {
-      throw new Error("MFA challenge risk does not match the requested operation.");
+      throw new MfaChallengeError("MFA challenge risk does not match the requested operation.");
     }
 
     const consumed = await client.mfaChallenge.updateMany({
@@ -220,7 +221,7 @@ export async function validateAndConsumeMfaChallenge(
     });
 
     if (consumed.count !== 1) {
-      throw new Error("MFA challenge has already been consumed.");
+      throw new MfaChallengeError("MFA challenge has already been consumed.");
     }
 
     return client.mfaChallenge.findUnique({ where: { id: challenge.id } });

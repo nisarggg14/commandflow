@@ -55,6 +55,7 @@ export async function POST(req: NextRequest) {
       userId: authUser.id,
       companyId: authUser.companyId,
       mfaChallengeToken: typeof body.mfaChallengeToken === "string" ? body.mfaChallengeToken : undefined,
+      approvalId: typeof body.approvalId === "string" ? body.approvalId : undefined,
       connectedClientId: body.connectedClientId,
       requestId,
     });

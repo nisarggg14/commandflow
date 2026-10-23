@@ -42,3 +42,10 @@ export class AuthenticationServiceError extends Error {
     this.cause = cause;
   }
 }
+
+export class MfaChallengeError extends UnauthorizedError {
+  constructor(message: string) {
+    super(message);
+    this.name = "MfaChallengeError";
+  }
+}

@@ -10,8 +10,11 @@ interface CreateMcpContextOptions {
   prismaClient?: PrismaClient;
   logger?: MCPLogger;
   mfaChallengeToken?: string;
+  approvalId?: string;
   mfaVerified?: boolean;
   connectedClientId?: string;
+  conversationId?: string;
+  originalCommand?: string;
 }
 
 export function createMcpContext({
@@ -22,8 +25,11 @@ export function createMcpContext({
   prismaClient,
   logger,
   mfaChallengeToken,
+  approvalId,
   mfaVerified,
   connectedClientId,
+  conversationId,
+  originalCommand,
 }: CreateMcpContextOptions): MCPContext {
   return {
     userId,
@@ -34,7 +40,10 @@ export function createMcpContext({
     prisma: prismaClient ?? prisma,
     logger: logger ?? (() => undefined),
     mfaChallengeToken,
+    approvalId,
     mfaVerified,
     connectedClientId,
+    conversationId,
+    originalCommand,
   };
 }

@@ -64,7 +64,7 @@ async function buildConnection(client: {
   baseUrl: string;
   authType: string;
   authConfig: string | null;
-}): Promise<InventoryApiConnection> {
+}, requestId?: string): Promise<InventoryApiConnection> {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(client.baseUrl);
@@ -92,11 +92,12 @@ async function buildConnection(client: {
     authType: client.authType,
     authConfig: readAuthConfig(client.authType, client.authConfig),
     timeoutMs: CONNECTOR_TIMEOUT_MS,
+    requestId,
   };
 }
 
 export async function withAuthenticatedConnectedClient<T>(
-  context: Pick<MCPContext, "companyId" | "connectedClientId" | "prisma">,
+  context: Pick<MCPContext, "companyId" | "connectedClientId" | "prisma"> & { requestId?: string },
   operation: () => Promise<T>,
   db: PrismaClient = context.prisma
 ): Promise<T> {
@@ -115,6 +116,6 @@ export async function withAuthenticatedConnectedClient<T>(
 
   if (!client) throw new NotFoundError("Selected connected client is unavailable.");
 
-  const connection = await buildConnection(client);
+  const connection = await buildConnection(client, context.requestId);
   return runWithInventoryApiConnection(connection, () => runWithOrderApiConnection(connection, operation));
 }

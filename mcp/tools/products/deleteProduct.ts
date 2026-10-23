@@ -14,6 +14,7 @@ export function createDeleteProductTool(): MCPTool {
     inputSchema: z.object({
       productId: z.string().min(1).max(128),
     }),
+
     async execute(input) {
       const { productId } = input as { productId: string };
       return deleteProduct(productId);

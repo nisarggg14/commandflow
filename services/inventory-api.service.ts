@@ -41,9 +41,11 @@ export interface InventoryApiConnection {
   authType: "NONE" | "BEARER" | "API_KEY" | "BASIC" | "INVENTORY_LOGIN";
   authConfig: Record<string, string>;
   timeoutMs?: number;
+  requestId?: string;
 }
 
 interface InventoryProductVariant {
+  id?: string;
   sku: string;
   color: string;
   size: string;
@@ -53,6 +55,7 @@ interface InventoryProductVariant {
 }
 
 export interface InventoryProduct {
+  id?: string;
   productId: string;
   name: string;
   brand: string;
@@ -421,6 +424,12 @@ async function inventoryRequest<T>(
     requestTrace?.onRequestStart();
     try {
       response = await fetch(requestUrl.toString(), { ...options, headers, signal, redirect: "manual" });
+      console.info("[inventory.client] request completed", {
+        requestId: connection.requestId,
+        method: options.method ?? "GET",
+        path,
+        status: response.status,
+      });
     } catch (error) {
       const category = networkErrorCategory(error);
       requestTrace?.onRequestFailed("Connected client request failed.", undefined, category);
@@ -457,6 +466,13 @@ async function inventoryRequest<T>(
       return payload as T;
     } catch (error) {
       const inventoryError = error instanceof InventoryApiError ? error : undefined;
+      console.warn("[inventory.client] request failed", {
+        requestId: connection.requestId,
+        method: options.method ?? "GET",
+        path,
+        status: inventoryError?.httpStatus ?? response.status,
+        category: inventoryError?.category ?? "malformed_response",
+      });
       requestTrace?.onRequestFailed(
         "Connected client request failed.",
         inventoryError?.httpStatus ?? response.status,

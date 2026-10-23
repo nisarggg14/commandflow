@@ -31,7 +31,7 @@ export function createChangeRoleTool(): MCPTool {
         throw new Error("Role changes must be server-authorized and cannot promote a user to ADMIN without the approval workflow.");
       }
 
-      return context.prisma.user.updateMany({
+      const updated = await context.prisma.user.updateMany({
         where: {
           id: userId,
           companyId: context.companyId,
@@ -40,6 +40,12 @@ export function createChangeRoleTool(): MCPTool {
           role: nextRole,
         },
       });
+
+      if (updated.count !== 1) {
+        throw new Error("User was not found in the authenticated company or the role was already set.");
+      }
+
+      return updated;
     },
   };
 }

@@ -3,6 +3,7 @@ import {
   generateResponse,
   GeminiIntentAnalysisError,
   GeminiIntentResponseError,
+  GeminiQuotaError,
   GeminiTemporaryUnavailableError,
   getGeminiConfigurationStatus,
   getGeminiFailureDetails,
@@ -163,7 +164,15 @@ ${message}
   try {
     llmResponse = await generate(prompt, [message]);
   } catch (error) {
-    if (error instanceof GeminiTemporaryUnavailableError) {
+    const fallback = deterministicPreRouter(message, server);
+    if (fallback?.tool) {
+      traceHooks?.onStageFallback?.("intent-analysis", "Used a validated deterministic route after Gemini intent analysis failed.");
+      traceHooks?.onStageComplete?.("intent-analysis");
+      traceHooks?.onStageStart?.("mcp-plan-preparation");
+      traceHooks?.onStageComplete?.("mcp-plan-preparation");
+      return fallback;
+    }
+    if (error instanceof GeminiQuotaError || error instanceof GeminiTemporaryUnavailableError) {
       traceHooks?.onStageFailed?.("intent-analysis", error.message);
       throw error;
     }
@@ -186,6 +195,14 @@ ${message}
   }
 
   if (!llmResponse.success) {
+    const fallback = deterministicPreRouter(message, server);
+    if (fallback?.tool) {
+      traceHooks?.onStageFallback?.("intent-analysis", "Used a validated deterministic route after Gemini returned an unsuccessful result.");
+      traceHooks?.onStageComplete?.("intent-analysis");
+      traceHooks?.onStageStart?.("mcp-plan-preparation");
+      traceHooks?.onStageComplete?.("mcp-plan-preparation");
+      return fallback;
+    }
     const error = new GeminiIntentResponseError("Gemini intent analysis returned no successful result.");
     console.error("[intent] Gemini returned unsuccessful result", {
       ...getGeminiConfigurationStatus(),
@@ -202,6 +219,12 @@ ${message}
     traceHooks?.onStageComplete?.("mcp-plan-preparation");
     return parsedCommand;
   } catch (error) {
+    const fallback = deterministicPreRouter(message, server);
+    if (fallback?.tool) {
+      traceHooks?.onStageFallback?.("intent-analysis", "Used a validated deterministic route after Gemini returned an invalid intent.");
+      traceHooks?.onStageComplete?.("mcp-plan-preparation");
+      return fallback;
+    }
     const errorMessage = error instanceof GeminiIntentResponseError
       ? error.message
       : "Gemini selected an invalid or unauthorized tool request.";
@@ -288,29 +311,66 @@ function deterministicPreRouter(message: string, server: CommandFlowMCPServer): 
     .replace(/[.!?]+$/, "")
     .replace(/\s+/g, " ");
   const normalized = normalizedCommand.toLowerCase();
+  const variantDeletionMatch = matchVariantDeletionCommand(normalizedCommand);
   const deleteProductMatch = normalizedCommand.match(/^delete product (\S+)$/i);
   const getProductMatch = normalizedCommand.match(
     /^(?:what is the )?name of product (\S+)$/i,
   ) ?? normalizedCommand.match(/^(?:show|get|find|lookup) product (\S+)$/i);
+  const getProductDetailsMatch = normalizedCommand.match(
+    /^(?:get|show|fetch|find|lookup) details for (?:product )?(\S+)$/i,
+  );
   const stockUpdateMatch = normalizedCommand.match(
-    /^(?:set|update) stock of sku\s+(\S+)\s+to\s+(\d+)$/i,
+    /^(?:set|update) stock of (?:sku\s+(\S+)|(?!sku\b)(\S+))\s+to\s+(\d+)$/i,
+  );
+  const priceUpdateMatch = normalizedCommand.match(
+    /^(?:set|update|change) price of (?:product\s+)?(\S+)(?:\s+variant\s+(\S+))?\s+to\s+(\d+(?:\.\d+)?)$/i,
   );
   const candidate = DETERMINISTIC_COMMANDS.find((item) => item.phrases.includes(normalized))
+    ?? (variantDeletionMatch
+      ? {
+        tool: "products.deleteVariant",
+        arguments: {
+          productId: variantDeletionMatch.productId,
+          sku: variantDeletionMatch.sku,
+        },
+      }
+      : undefined)
     ?? (deleteProductMatch
       ? { tool: "products.deleteProduct", arguments: { productId: deleteProductMatch[1] } }
       : undefined)
     ?? (getProductMatch
       ? { tool: "products.getProduct", arguments: { productId: getProductMatch[1] } }
       : undefined)
+    ?? (getProductDetailsMatch
+      ? { tool: "products.getProduct", arguments: { productId: getProductDetailsMatch[1] } }
+      : undefined)
     ?? (stockUpdateMatch
       ? {
         tool: "products.updateStock",
-        arguments: { sku: stockUpdateMatch[1], stock: Number(stockUpdateMatch[2]) },
+        arguments: { sku: stockUpdateMatch[1] ?? stockUpdateMatch[2], stock: Number(stockUpdateMatch[3]) },
       }
       : undefined);
 
-  if (candidate) {
-    if (!server.listTools().some((tool) => tool.name === candidate.tool)) {
+  const routedCandidate = candidate ?? (priceUpdateMatch
+    ? {
+      tool: "products.adjustPrice",
+      arguments: {
+        productId: priceUpdateMatch[1],
+        operation: "set",
+        price: Number(priceUpdateMatch[3] ?? priceUpdateMatch[2]),
+        ...(priceUpdateMatch[2] ? { sku: priceUpdateMatch[2] } : {}),
+      },
+    }
+    : undefined);
+
+  if (routedCandidate) {
+    if (!server.listTools().some((tool) => tool.name === routedCandidate.tool)) {
+      if (routedCandidate.tool === "products.deleteVariant") {
+        return {
+          action: "unknown",
+          unsupportedMessage: "Variant deletion is not supported by the connected Inventory Backend.",
+        };
+      }
       return {
         action: "unknown",
         unsupportedMessage: "This command is not available to your account.",
@@ -318,8 +378,8 @@ function deterministicPreRouter(message: string, server: CommandFlowMCPServer): 
     }
 
     try {
-      const argumentsObject = server.validateToolInput(candidate.tool, { ...candidate.arguments });
-      if (isPlainObject(argumentsObject)) return { tool: candidate.tool, arguments: argumentsObject };
+      const argumentsObject = server.validateToolInput(routedCandidate.tool, { ...routedCandidate.arguments });
+      if (isPlainObject(argumentsObject)) return { tool: routedCandidate.tool, arguments: argumentsObject };
     } catch {
       return {
         action: "unknown",
@@ -335,7 +395,7 @@ function deterministicPreRouter(message: string, server: CommandFlowMCPServer): 
   if (/^delete\b/i.test(normalizedCommand)) {
     return {
       action: "unknown",
-      unsupportedMessage: "Deleting a variant or other item is not supported by the registered product tools.",
+      unsupportedMessage: "Variant deletion is not supported by the connected Inventory Backend; deleting a variant or other item is not supported by the registered product tools.",
     };
   }
 
@@ -365,6 +425,44 @@ function deterministicPreRouter(message: string, server: CommandFlowMCPServer): 
     };
   }
 
+  const themeMatch = normalizedCommand.match(
+    /^(?:change|set|update)\s+(?:the\s+)?(?:frontend\s+)?theme\s+to\s+(light|dark|system)$/i,
+  );
+  if (themeMatch) {
+    return validateDeterministicUiCandidate(
+      server,
+      "frontend.updateTheme",
+      { theme: themeMatch[1].toLowerCase() },
+      "That theme value is unsupported by the registered frontend tools.",
+    );
+  }
+
+  const navbarMatch = normalizedCommand.match(
+    /^(?:change|set|update)\s+(?:the\s+)?(?:frontend\s+)?navbar(?:\s+density\s+to\s+(comfortable|compact))?\s*(?:and\s+)?(show company name|hide company name)$/i,
+  );
+  if (navbarMatch) {
+    const density = navbarMatch[1] ?? "comfortable";
+    const showCompanyName = navbarMatch[2].toLowerCase() === "show company name";
+    return validateDeterministicUiCandidate(
+      server,
+      "frontend.updateNavbar",
+      { density, showCompanyName },
+      "That navbar setting is unsupported or incomplete for the registered frontend tools.",
+    );
+  }
+
+  const brandingMatch = normalizedCommand.match(
+    /^(?:change|set|update)\s+(?:the\s+)?(?:frontend\s+)?branding\s+accent\s+to\s+(mint|sky|amber)\s+and\s+mark\s+to\s+(commandflow|inventory)$/i,
+  );
+  if (brandingMatch) {
+    return validateDeterministicUiCandidate(
+      server,
+      "frontend.updateBranding",
+      { accent: brandingMatch[1].toLowerCase(), mark: brandingMatch[2].toLowerCase() },
+      "That branding value is unsupported or incomplete for the registered frontend tools.",
+    );
+  }
+
   if (isUiModificationRequest) {
     return {
       action: "unknown",
@@ -373,4 +471,55 @@ function deterministicPreRouter(message: string, server: CommandFlowMCPServer): 
   }
 
   return undefined;
+}
+
+function matchVariantDeletionCommand(
+  command: string,
+): { productId?: string; sku: string } | undefined {
+  const token = `(?:"([^"\r\n]+)"|'([^'\r\n]+)'|(\S+))`;
+  const explicitVariant = command.match(new RegExp(`^delete variant ${token}$`, "i"));
+  if (explicitVariant) {
+    return { sku: explicitVariant[1] ?? explicitVariant[2] ?? explicitVariant[3] };
+  }
+
+  const productAndVariant = command.match(
+    new RegExp(`^delete product (?:"([^"\r\n]+)"|'([^'\r\n]+)'|(\S+)) variant ${token}$`, "i"),
+  );
+  if (productAndVariant) {
+    return {
+      productId: productAndVariant[1] ?? productAndVariant[2] ?? productAndVariant[3],
+      sku: productAndVariant[4] ?? productAndVariant[5] ?? productAndVariant[6],
+    };
+  }
+
+  const quotedSku = command.match(
+    /^delete product (?:"([^"\r\n]+)"|'([^'\r\n]+)'|(\S+))\s+(?:"([^"\r\n]+)"|'([^'\r\n]+)')$/i,
+  );
+  if (quotedSku) {
+    return {
+      productId: quotedSku[1] ?? quotedSku[2] ?? quotedSku[3],
+      sku: quotedSku[4] ?? quotedSku[5],
+    };
+  }
+
+  return undefined;
+}
+
+function validateDeterministicUiCandidate(
+  server: CommandFlowMCPServer,
+  tool: string,
+  argumentsObject: Record<string, unknown>,
+  invalidMessage: string,
+): ParsedCommand {
+  if (!server.listTools().some((item) => item.name === tool)) {
+    return { action: "unknown", unsupportedMessage: "This UI tool is not available to your account." };
+  }
+
+  try {
+    const validated = server.validateToolInput(tool, argumentsObject);
+    if (isPlainObject(validated)) return { tool, arguments: validated };
+  } catch {
+    // Return a safe non-executable result for unsupported values.
+  }
+  return { action: "unknown", unsupportedMessage: invalidMessage };
 }
