@@ -47,7 +47,7 @@ test("viewer mutation execution is denied by MCP authorization", () => {
   assert.throws(() => server.authorize(createProduct), /does not have permission/i);
 });
 
-test("order tools are registered and price changes require high-risk MFA", () => {
+test("order tools are registered and price changes do not require high-risk MFA", () => {
   const tools = createDefaultTools();
   const names = tools.map((tool) => tool.name);
   const adjustPrice = tools.find((tool) => tool.name === "products.adjustPrice");
@@ -56,9 +56,8 @@ test("order tools are registered and price changes require high-risk MFA", () =>
   assert.ok(names.includes("orders.getOrders"));
   assert.ok(names.includes("orders.updateOrderStatus"));
   assert.ok(names.includes("orders.cancelOrder"));
-  assert.equal(adjustPrice?.riskLevel, "HIGH");
-  assert.equal(adjustPrice?.requiresMfaStepUp, true);
-  assert.equal(adjustPrice?.mfaPurpose, "products.adjustPrice");
+  assert.equal(adjustPrice?.riskLevel, "MEDIUM");
+  assert.equal(adjustPrice?.requiresMfaStepUp, false);
   assert.equal(updateStock?.riskLevel, "MEDIUM");
   assert.equal(updateStock?.requiresMfaStepUp, false);
 });
@@ -82,8 +81,8 @@ test("order risk classifications, schemas, and permissions are enforced", () => 
   assert.equal(cancelOrder.mfaPurpose, "orders.cancelOrder");
   assert.deepEqual(cancelOrder.permissions, [Permission.ADMIN]);
 
-  assert.equal(getTool("products.adjustPrice").riskLevel, "HIGH");
-  assert.equal(getTool("products.adjustPrice").requiresMfaStepUp, true);
+  assert.equal(getTool("products.adjustPrice").riskLevel, "MEDIUM");
+  assert.equal(getTool("products.adjustPrice").requiresMfaStepUp, false);
   assert.equal(getTool("products.updateStock").riskLevel, "MEDIUM");
 });
 

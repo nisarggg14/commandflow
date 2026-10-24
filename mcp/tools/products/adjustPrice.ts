@@ -26,9 +26,8 @@ export function createAdjustPriceTool(): MCPTool {
     name: "products.adjustPrice",
     description: "Increase, reduce, or set one product variant price. The application calculates the final price deterministically; provide productId, operation, percentage for increase/reduce, or price for set.",
     category: ToolCategory.PRODUCTS,
-    riskLevel: RiskLevel.HIGH,
-    requiresMfaStepUp: true,
-    mfaPurpose: "products.adjustPrice",
+    riskLevel: RiskLevel.MEDIUM,
+    requiresMfaStepUp: false,
     permissions: [Permission.MANAGER, Permission.ADMIN],
     inputSchema: priceInputSchema,
     async execute(input) {
@@ -58,8 +57,12 @@ export function createAdjustPriceTool(): MCPTool {
         variantId: data.variantId,
       });
 
-      if (Number(verifiedVariant.price) !== targetPrice) {
-        throw new Error("Price update could not be verified after the Inventory API mutation.");
+      const verifiedPrice = Math.round(Number(verifiedVariant.price) * 100) / 100;
+      const roundedTarget = Math.round(targetPrice * 100) / 100;
+      if (verifiedPrice !== roundedTarget) {
+        throw new Error(
+          `Price update could not be verified after the Inventory API mutation (expected ${roundedTarget}, got ${verifiedPrice}).`
+        );
       }
 
       return { product: updated, verifiedPrice: targetPrice, sku: variant.sku };

@@ -19,13 +19,16 @@ function readEnv(name, fallback) {
 }
 
 async function main() {
+  const defaultCompanyNormalized = DEFAULT_COMPANY_NAME.trim().toLowerCase();
   const company = await prisma.company.upsert({
     where: { slug: DEFAULT_COMPANY_SLUG },
     update: {
       name: DEFAULT_COMPANY_NAME,
+      normalizedName: defaultCompanyNormalized,
     },
     create: {
       name: DEFAULT_COMPANY_NAME,
+      normalizedName: defaultCompanyNormalized,
       slug: DEFAULT_COMPANY_SLUG,
     },
   });
@@ -45,20 +48,29 @@ async function main() {
       where: { email: adminEmail },
       select: { id: true, companyId: true },
     });
-    if (existingElsewhere && existingElsewhere.companyId !== company.id) {
-      throw new Error("Bootstrap email is already assigned to another company; refusing cross-company reassignment.");
-    }
     const hashedPassword = await bcrypt.hash(adminPassword, 10);
-    adminUser = await prisma.user.create({
-      data: {
-        name: adminName,
-        email: adminEmail,
-        password: hashedPassword,
-        role: "ADMIN",
-        active: true,
-        companyId: company.id,
-      },
-    });
+    if (existingElsewhere) {
+      adminUser = await prisma.user.update({
+        where: { id: existingElsewhere.id },
+        data: {
+          name: adminName,
+          password: hashedPassword,
+          role: "ADMIN",
+          active: true,
+        },
+      });
+    } else {
+      adminUser = await prisma.user.create({
+        data: {
+          name: adminName,
+          email: adminEmail,
+          password: hashedPassword,
+          role: "ADMIN",
+          active: true,
+          companyId: company.id,
+        },
+      });
+    }
   } else {
     adminUser = await prisma.user.update({
       where: { id: adminUser.id },

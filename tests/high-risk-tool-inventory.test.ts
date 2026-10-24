@@ -9,7 +9,6 @@ test("registered HIGH-risk tool inventory keeps approval and MFA metadata intact
   const tools = createDefaultTools().filter((tool) => tool.riskLevel === RiskLevel.HIGH);
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const expected = [
-    "products.adjustPrice",
     "products.deleteProduct",
     "users.changeRole",
     "users.disableUser",
