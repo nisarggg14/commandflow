@@ -1,0 +1,55 @@
+[1mdiff --git a/tests/mcp-connector.test.ts b/tests/mcp-connector.test.ts[m
+[1mindex 6b5eba8..92cc1b3 100644[m
+[1m--- a/tests/mcp-connector.test.ts[m
+[1m+++ b/tests/mcp-connector.test.ts[m
+[36m@@ -1,4 +1,5 @@[m
+[31m-import test from "node:test";[m
+[32m+[m[32mimport test, { mock } from "node:test";[m
+[32m+[m[32mimport dns from "node:dns/promises";[m
+ import assert from "node:assert/strict";[m
+ import { encryptSecret } from "../lib/mfa";[m
+ import { withAuthenticatedConnectedClient } from "../services/mcp-connector.service";[m
+[36m@@ -12,6 +13,9 @@[m [mfunction fakeContext(db: unknown, connectedClientId = "client-1") {[m
+ [m
+ test("MCP connector derives base URL and Authorization from the selected client", async () => {[m
+   const originalFetch = globalThis.fetch;[m
+[32m+[m[32m  const dnsLookupMock = mock.method(dns, "lookup", async () => [[m
+[32m+[m[32m    { address: "203.0.113.10", family: 4 },[m
+[32m+[m[32m  ]);[m
+   let requestedUrl = "";[m
+   let requestedAuthorization = "";[m
+   globalThis.fetch = async (input, init) => {[m
+[36m@@ -39,6 +43,7 @@[m [mtest("MCP connector derives base URL and Authorization from the selected client"[m
+     assert.equal(requestedAuthorization, "Bearer connector-secret");[m
+   } finally {[m
+     globalThis.fetch = originalFetch;[m
+[32m+[m[32m    dnsLookupMock.mock.restore();[m
+   }[m
+ });[m
+ [m
+[1mdiff --git a/tests/mcp-runtime.test.ts b/tests/mcp-runtime.test.ts[m
+[1mindex a70dc32..be34458 100644[m
+[1m--- a/tests/mcp-runtime.test.ts[m
+[1m+++ b/tests/mcp-runtime.test.ts[m
+[36m@@ -47,15 +47,17 @@[m [mtest("viewer mutation execution is denied by MCP authorization", () => {[m
+   assert.throws(() => server.authorize(createProduct), /does not have permission/i);[m
+ });[m
+ [m
+[31m-test("orders are not exposed and price changes are medium risk without step-up MFA", () => {[m
+[32m+[m[32mtest("order tools are registered and price changes require high-risk MFA", () => {[m
+   const tools = createDefaultTools();[m
+   const names = tools.map((tool) => tool.name);[m
+   const adjustPrice = tools.find((tool) => tool.name === "products.adjustPrice");[m
+   const updateStock = tools.find((tool) => tool.name === "products.updateStock");[m
+ [m
+[31m-  assert.ok(!names.some((name) => name.startsWith("orders.")));[m
+[31m-  assert.equal(adjustPrice?.riskLevel, "MEDIUM");[m
+[31m-  assert.equal(adjustPrice?.requiresMfaStepUp, false);[m
+[32m+[m[32m  assert.ok(names.includes("orders.getOrders"));[m
+[32m+[m[32m  assert.ok(names.includes("orders.updateOrderStatus"));[m
+[32m+[m[32m  assert.ok(names.includes("orders.cancelOrder"));[m
+[32m+[m[32m  assert.equal(adjustPrice?.riskLevel, "HIGH");[m
+[32m+[m[32m  assert.equal(adjustPrice?.requiresMfaStepUp, true);[m
+   assert.equal(adjustPrice?.mfaPurpose, "products.adjustPrice");[m
+   assert.equal(updateStock?.riskLevel, "MEDIUM");[m
+   assert.equal(updateStock?.requiresMfaStepUp, false);[m

@@ -1,0 +1,12 @@
+ALTER TABLE "User" ADD COLUMN "active" BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE "ActivityLog" ADD COLUMN "connectedClientId" TEXT;
+CREATE INDEX "ActivityLog_companyId_createdAt_idx" ON "ActivityLog"("companyId", "createdAt");
+CREATE INDEX "ActivityLog_connectedClientId_idx" ON "ActivityLog"("connectedClientId");
+ALTER TABLE "ActivityLog" ADD CONSTRAINT "ActivityLog_connectedClientId_fkey" FOREIGN KEY ("connectedClientId") REFERENCES "ConnectedClient"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+CREATE TABLE "Automation" ("id" TEXT NOT NULL, "name" TEXT NOT NULL, "toolName" TEXT NOT NULL, "argumentsJson" TEXT NOT NULL, "schedule" TEXT NOT NULL, "enabled" BOOLEAN NOT NULL DEFAULT true, "lastExecutionKey" TEXT, "lastRunAt" TIMESTAMP(3), "companyId" TEXT NOT NULL, "ownerId" TEXT NOT NULL, "connectedClientId" TEXT NOT NULL, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL, CONSTRAINT "Automation_pkey" PRIMARY KEY ("id"));
+CREATE UNIQUE INDEX "Automation_companyId_name_key" ON "Automation"("companyId", "name");
+CREATE INDEX "Automation_companyId_enabled_idx" ON "Automation"("companyId", "enabled");
+CREATE INDEX "Automation_connectedClientId_idx" ON "Automation"("connectedClientId");
+ALTER TABLE "Automation" ADD CONSTRAINT "Automation_companyId_fkey" FOREIGN KEY ("companyId") REFERENCES "Company"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "Automation" ADD CONSTRAINT "Automation_ownerId_fkey" FOREIGN KEY ("ownerId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "Automation" ADD CONSTRAINT "Automation_connectedClientId_fkey" FOREIGN KEY ("connectedClientId") REFERENCES "ConnectedClient"("id") ON DELETE CASCADE ON UPDATE CASCADE;

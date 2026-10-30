@@ -11,3 +11,41 @@ export class ForbiddenError extends Error {
     this.name = "ForbiddenError";
   }
 }
+
+export class NotFoundError extends Error {
+  constructor(message = "Not found") {
+    super(message);
+    this.name = "NotFoundError";
+  }
+}
+
+export class ConflictError extends Error {
+  constructor(message = "Conflict") {
+    super(message);
+    this.name = "ConflictError";
+  }
+}
+
+export class ValidationFailedError extends Error {
+  constructor(message = "Validation failed") {
+    super(message);
+    this.name = "ValidationFailedError";
+  }
+}
+
+export class AuthenticationServiceError extends Error {
+  readonly cause?: unknown;
+
+  constructor(message = "Authentication service unavailable.", cause?: unknown) {
+    super(message);
+    this.name = "AuthenticationServiceError";
+    this.cause = cause;
+  }
+}
+
+export class MfaChallengeError extends UnauthorizedError {
+  constructor(message: string) {
+    super(message);
+    this.name = "MfaChallengeError";
+  }
+}

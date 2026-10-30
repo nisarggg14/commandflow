@@ -1,0 +1,67 @@
+{
+  "generatedAt": "2026-10-16T06:46:50.724Z",
+  "sourceRevision": "unavailable",
+  "harness": "fixture-only",
+  "warmupCount": 1000,
+  "sampleCount": 10000,
+  "fixtureCount": 8,
+  "percentileConvention": "nearest-rank ceil(p*n)-1",
+  "throughput": "sampleCount divided by measured batch wall-clock seconds",
+  "noMcpExecution": true,
+  "noDatabaseAccess": true,
+  "noExternalCalls": true,
+  "summaries": {
+    "fixture-schema-validation": {
+      "sample_count": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "min_ms": 0.00019999999999242846,
+      "mean_ms": 0.000774469999999986,
+      "p50_ms": 0.0004000000000132786,
+      "p95_ms": 0.0010999999999938836,
+      "p99_ms": 0.0015000000000000568,
+      "max_ms": 0.8289000000000044,
+      "stddev_ms": 0.011646737020262497,
+      "throughput_per_second": 913834.5411179856
+    },
+    "fixture-authorization": {
+      "sample_count": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "min_ms": 0.0002999999999957481,
+      "mean_ms": 0.00045620000000001824,
+      "p50_ms": 0.00039999999999906777,
+      "p95_ms": 0.0004000000000132786,
+      "p99_ms": 0.0023999999999944066,
+      "max_ms": 0.20470000000000255,
+      "stddev_ms": 0.0032873973839498997,
+      "throughput_per_second": 1698167.6770764345
+    },
+    "fixture-direct-ui-baseline": {
+      "sample_count": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "min_ms": 0.0002999999999957481,
+      "mean_ms": 0.0005800999999999448,
+      "p50_ms": 0.00039999999999906777,
+      "p95_ms": 0.0009000000000014552,
+      "p99_ms": 0.001300000000000523,
+      "max_ms": 0.2237999999999971,
+      "stddev_ms": 0.0032313740096127966,
+      "throughput_per_second": 1325012.2563633714
+    },
+    "fixture-mcp-dispatch-ui": {
+      "sample_count": 10000,
+      "successes": 10000,
+      "failures": 0,
+      "min_ms": 0.0002999999999957481,
+      "mean_ms": 0.00047437999999999365,
+      "p50_ms": 0.00039999999999906777,
+      "p95_ms": 0.0006999999999948159,
+      "p99_ms": 0.0010000000000047748,
+      "max_ms": 0.2522999999999911,
+      "stddev_ms": 0.002772773992881487,
+      "throughput_per_second": 1601717.0406675981
+    }
+  }
+}

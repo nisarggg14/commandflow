@@ -1,0 +1,603 @@
+import { z } from "zod";
+import { ApprovalStatus } from "@prisma/client";
+import { validateAndConsumeMfaChallenge } from "@/lib/mfa";
+import {
+  createApprovalRequest,
+  computeApprovalHash,
+  validateApprovalForExecution,
+  markApprovalExecuted,
+
+  claimApprovalForExecution,
+
+  markApprovalFailed,
+} from "@/services/approval.service";
+import type { MCPContext, MCPTool, ToolExecutionResult, ToolRegistry, ToolMetadata, ToolExecutionTraceHooks } from "./types";
+import {
+  Permission,
+  PermissionDeniedError,
+  ToolNotFoundError,
+  ValidationError,
+  type AuditLogEntry,
+} from "./types";
+import { InMemoryToolRegistry } from "./registry";
+import { redactAuditText } from "@/lib/audit-redaction";
+import { withAuthenticatedConnectedClient } from "@/services/mcp-connector.service";
+import { InventoryApiError } from "@/services/inventory-api.service";
+import { logServerError } from "@/lib/server-error-logging";
+import { toolRequiresConnectedClient } from "./client-tool-policy";
+
+function collectSensitiveInputStrings(value: unknown, depth = 0): string[] {
+  if (depth > 6 || value === null || value === undefined) return [];
+  if (typeof value === "string") return value ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap((item) => collectSensitiveInputStrings(item, depth + 1));
+  if (typeof value !== "object") return [];
+
+  return Object.values(value as Record<string, unknown>)
+    .flatMap((item) => collectSensitiveInputStrings(item, depth + 1));
+}
+
+interface RuntimeMetrics {
+  totalExecutions: number;
+  successfulExecutions: number;
+  failedExecutions: number;
+  pendingApprovals: number;
+  averageExecutionTime: number;
+  lastExecution: string | null;
+}
+
+export class CommandFlowMCPServer {
+  private readonly metricsState: RuntimeMetrics = {
+    totalExecutions: 0,
+    successfulExecutions: 0,
+    failedExecutions: 0,
+    pendingApprovals: 0,
+    averageExecutionTime: 0,
+    lastExecution: null,
+  };
+
+  constructor(
+    private readonly context: MCPContext,
+    private readonly registry: ToolRegistry = new InMemoryToolRegistry()
+  ) {}
+
+  registerTool(tool: MCPTool): MCPTool {
+    this.registry.register(tool);
+    return tool;
+  }
+
+  registerTools(tools: MCPTool[]): MCPTool[] {
+    tools.forEach((tool) => this.registerTool(tool));
+    return tools;
+  }
+
+  async executeTool(name: string, input: unknown, traceHooks?: ToolExecutionTraceHooks): Promise<ToolExecutionResult> {
+    const startedAt = Date.now();
+    let riskLevel = "LOW";
+    let mfaRequired = false;
+    let mfaResult: "SUCCESS" | "FAILED" | "NOT_REQUIRED" = "NOT_REQUIRED";
+    let validationCompleted = false;
+    let executionStarted = false;
+    let approvalRequired = false;
+
+    let approvalId: string | null = null;
+
+    traceHooks?.onStageStart?.("tool-selection-validation");
+
+    try {
+      const tool = this.registry.get(name);
+
+      if (!tool) {
+        throw new ToolNotFoundError(`No tool registered with the name ${name}.`);
+      }
+
+      if (toolRequiresConnectedClient(tool.name)) {
+        const connectedClientId = this.context.connectedClientId;
+        if (!connectedClientId) {
+          throw new ValidationError("Select a target client before running this tool.");
+        }
+        const activeClient = await this.context.prisma.connectedClient.findFirst({
+          where: {
+            id: connectedClientId,
+            companyId: this.context.companyId,
+            status: "ACTIVE",
+          },
+          select: { id: true },
+        });
+        if (!activeClient) {
+          throw new ValidationError("Selected connected client is unavailable.");
+        }
+      }
+
+      riskLevel = tool.riskLevel ?? "LOW";
+      mfaRequired = tool.requiresMfaStepUp === true || riskLevel === "HIGH";
+
+      const parsedInput = this.validate(tool, input);
+      this.authorize(tool);
+      this.evaluateRisk(tool);
+
+
+      const baseApprovalPurpose = tool.mfaPurpose ?? tool.name;
+      // Bind approvals to the selected client as well as the tool and args.
+      // This prevents an approval granted for client A being replayed against
+      // client B when both expose the same tool.
+      const approvalPurpose = this.context.connectedClientId
+        ? `${baseApprovalPurpose}:client:${this.context.connectedClientId}`
+        : baseApprovalPurpose;
+
+      if (riskLevel === "HIGH") {
+        const approvalHash = computeApprovalHash({
+          toolName: tool.name,
+          requesterId: this.context.userId,
+          companyId: this.context.companyId,
+          purpose: approvalPurpose,
+          riskLevel,
+          argumentsObject: parsedInput,
+        });
+        // Resolve an explicitly supplied approval independently of the
+        // execution hash so an expired id cannot be hidden as a generic
+        // "not available" result when the command has changed.
+        if (this.context.approvalId) {
+          const suppliedApproval = await this.context.prisma.approval.findFirst({
+            where: {
+              id: this.context.approvalId,
+              companyId: this.context.companyId,
+              requesterId: this.context.userId,
+            },
+          });
+
+          if (suppliedApproval && (
+            suppliedApproval.status === ApprovalStatus.EXPIRED
+            || suppliedApproval.expiresAt <= new Date()
+          )) {
+            throw new PermissionDeniedError("The selected approval has expired. Submit the command again to request fresh approval.");
+          }
+        }
+
+        const existingApproval = await this.context.prisma.approval.findFirst({
+          where: {
+            ...(this.context.approvalId ? { id: this.context.approvalId } : {}),
+            companyId: this.context.companyId,
+            requesterId: this.context.userId,
+            toolName: tool.name,
+            purpose: approvalPurpose,
+            riskLevel,
+            argumentsHash: approvalHash,
+            status: { in: [ApprovalStatus.APPROVED, ApprovalStatus.PENDING] },
+            ...(!this.context.approvalId ? { expiresAt: { gt: new Date() } } : {}),
+          },
+          orderBy: { createdAt: "desc" },
+        });
+
+        if (this.context.approvalId && existingApproval && existingApproval.expiresAt <= new Date()) {
+          throw new PermissionDeniedError("The selected approval has expired. Submit the command again to request fresh approval.");
+        }
+
+        if (this.context.approvalId && (!existingApproval || existingApproval.status !== ApprovalStatus.APPROVED)) {
+          throw new PermissionDeniedError("The selected approval is not approved or no longer available for execution.");
+        }
+
+        if (!existingApproval || existingApproval.status !== ApprovalStatus.APPROVED) {
+          const createdApproval = await createApprovalRequest({
+            prisma: this.context.prisma,
+            requesterId: this.context.userId,
+            companyId: this.context.companyId,
+            toolName: tool.name,
+            argumentsObject: parsedInput,
+            purpose: approvalPurpose,
+            riskLevel,
+            conversationId: this.context.conversationId,
+            originalCommand: this.context.originalCommand,
+            connectedClientId: this.context.connectedClientId,
+          });
+
+          approvalId = createdApproval.id;
+          approvalRequired = true;
+          traceHooks?.onStageComplete?.("tool-selection-validation");
+          throw new PermissionDeniedError(`High-risk tool ${tool.name} requires a separate administrator approval before execution. Approval ${createdApproval.id} is pending.`);
+        }
+
+        approvalId = existingApproval.id;
+        await validateApprovalForExecution({
+          approval: {
+            id: existingApproval.id,
+            companyId: existingApproval.companyId,
+            requesterId: existingApproval.requesterId,
+            approverId: existingApproval.approverId,
+            toolName: existingApproval.toolName,
+            riskLevel: existingApproval.riskLevel,
+            purpose: existingApproval.purpose,
+            argumentsHash: existingApproval.argumentsHash,
+            status: existingApproval.status,
+            expiresAt: existingApproval.expiresAt,
+            executedAt: existingApproval.executedAt,
+            approvedAt: existingApproval.approvedAt,
+            rejectedAt: existingApproval.rejectedAt,
+          },
+          toolName: tool.name,
+          requesterId: this.context.userId,
+          companyId: this.context.companyId,
+          purpose: approvalPurpose,
+          riskLevel,
+          argumentsObject: parsedInput,
+        });
+      }
+
+      if (mfaRequired) {
+        const challengeToken = this.context.mfaChallengeToken;
+        if (!challengeToken) {
+          throw new PermissionDeniedError(`High-risk tool ${tool.name} requires a valid step-up MFA challenge.`);
+        }
+
+        const purpose = approvalId ? `approval:${approvalId}:execute` : (tool.mfaPurpose ?? tool.name);
+        await validateAndConsumeMfaChallenge(this.context.prisma, {
+          userId: this.context.userId,
+          challengeToken,
+          purpose,
+          riskLevel,
+        });
+        this.context.mfaVerified = true;
+        mfaResult = "SUCCESS";
+        if (approvalId) {
+          console.info("[mcp.approval] state transition", {
+            requestId: this.context.requestId,
+            approvalId,
+            toolName: tool.name,
+            connectedClientId: this.context.connectedClientId ?? null,
+            from: "APPROVED",
+            to: "EXECUTING",
+          });
+          await claimApprovalForExecution(this.context.prisma, approvalId, this.context.companyId);
+        }
+      }
+
+      validationCompleted = true;
+      traceHooks?.onStageComplete?.("tool-selection-validation");
+      executionStarted = true;
+      traceHooks?.onStageStart?.("tool-execution");
+
+      const data = toolRequiresConnectedClient(tool.name)
+        ? await this.withConnectedClient(async () => tool.execute(parsedInput, this.context))
+        : await tool.execute(parsedInput, this.context);
+      traceHooks?.onStageComplete?.("tool-execution");
+      const duration = Date.now() - startedAt;
+
+      if (approvalId) {
+        await markApprovalExecuted(this.context.prisma, approvalId, this.context.companyId);
+        console.info("[mcp.approval] state transition", {
+          requestId: this.context.requestId,
+          approvalId,
+          toolName: tool.name,
+          connectedClientId: this.context.connectedClientId ?? null,
+          from: "EXECUTING",
+          to: "EXECUTED",
+        });
+      }
+
+      await this.log({
+        tool: tool.name,
+        user: this.context.userId,
+        company: this.context.companyId,
+        timestamp: new Date().toISOString(),
+        duration,
+        status: "SUCCESS",
+        riskLevel,
+        mfaRequired,
+        mfaResult,
+        details: "Executed successfully",
+      });
+
+      this.recordMetric(duration, "SUCCESS");
+
+      return {
+        success: true,
+        tool: tool.name,
+        data,
+        message: "Tool executed successfully.",
+      };
+    } catch (error) {
+      const duration = Date.now() - startedAt;
+      const internalMessage = error instanceof Error ? error.message : "Unknown error";
+      console.error("[mcp.tool-execution] failure context", {
+        requestId: this.context.requestId,
+        toolName: name,
+        connectedClientId: this.context.connectedClientId ?? null,
+        durationMs: duration,
+      });
+      logServerError(
+        "mcp.tool-execution",
+        error,
+        collectSensitiveInputStrings(input),
+        this.context.requestId,
+      );
+      const explicitApprovalExpired = Boolean(this.context.approvalId)
+        && /approval (?:has )?expired/i.test(internalMessage);
+      const message = approvalRequired
+        ? internalMessage
+        : explicitApprovalExpired
+          ? "The selected approval has expired. Submit the command again to request fresh approval."
+        : error instanceof PermissionDeniedError || error instanceof ValidationError || error instanceof ToolNotFoundError
+          ? internalMessage
+          : error instanceof InventoryApiError
+            ? error.message
+          : "Tool execution failed. Please try again.";
+
+      if (approvalId && executionStarted) {
+        try {
+          const failedTransition = await markApprovalFailed(this.context.prisma, approvalId, this.context.companyId);
+          console.warn("[mcp.approval] state transition", {
+            requestId: this.context.requestId,
+            approvalId,
+            toolName: name,
+            connectedClientId: this.context.connectedClientId ?? null,
+            from: "EXECUTING",
+            to: failedTransition.count === 1 ? "FAILED" : "UNCHANGED",
+          });
+        } catch (transitionError) {
+          console.error("[mcp.approval] failure transition unavailable", {
+            requestId: this.context.requestId,
+            approvalId,
+            toolName: name,
+            connectedClientId: this.context.connectedClientId ?? null,
+            errorName: transitionError instanceof Error ? transitionError.name : "UnknownError",
+          });
+        }
+      }
+
+
+
+      if (executionStarted) {
+        traceHooks?.onStageFailed?.("tool-execution", message);
+      } else if (!validationCompleted && !approvalRequired) {
+        traceHooks?.onStageFailed?.("tool-selection-validation", message);
+      }
+
+      if (mfaRequired && !approvalRequired) {
+        mfaResult = "FAILED";
+      }
+
+      await this.log({
+        tool: name,
+        user: this.context.userId,
+        company: this.context.companyId,
+        timestamp: new Date().toISOString(),
+        duration,
+        status: approvalRequired ? "PENDING" : "FAILED",
+        riskLevel,
+        mfaRequired,
+        mfaResult,
+        details: approvalRequired ? "Awaiting administrator approval" : message,
+        errorMessage: approvalRequired ? undefined : message,
+      });
+
+      this.recordMetric(duration, approvalRequired ? "PENDING" : "FAILED");
+
+      return {
+        success: false,
+        tool: name,
+        ...(approvalRequired ? { outcome: "APPROVAL_REQUIRED" as const } : {}),
+        ...(approvalRequired && approvalId ? { approvalId } : {}),
+        message,
+        error: {
+          name: error instanceof Error ? error.name : "ExecutionError",
+          message,
+        },
+      };
+    }
+  }
+
+  listTools(): ToolMetadata[] {
+    return this.registry.list().filter((tool) => this.canAccess(tool)).map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      category: tool.category,
+      permissions: tool.permissions,
+      inputSchema: this.describeSchema(tool.inputSchema),
+    }));
+  }
+
+  health(): {
+    ok: boolean;
+    registeredToolCount: number;
+    context: Pick<MCPContext, "userId" | "companyId" | "role">;
+  } {
+    return {
+      ok: true,
+      registeredToolCount: this.registry.list().length,
+      context: {
+        userId: this.context.userId,
+        companyId: this.context.companyId,
+        role: this.context.role,
+      },
+    };
+  }
+
+  metrics(): RuntimeMetrics {
+    return { ...this.metricsState };
+  }
+
+  withConnectedClient<T>(operation: () => Promise<T>): Promise<T> {
+    return withAuthenticatedConnectedClient(this.context, operation);
+  }
+
+  validateToolInput(name: string, input: unknown): unknown {
+
+    const tool = this.registry.get(name);
+
+    if (!tool) throw new ToolNotFoundError(`No tool registered with the name ${name}.`);
+
+    this.authorize(tool);
+
+    return this.validate(tool, input);
+
+  }
+
+
+
+  validate(tool: MCPTool, input: unknown): unknown {
+    const parsed = tool.inputSchema.safeParse(input);
+
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .map((issue) => `${issue.path.join(".") || "value"}: ${issue.message}`)
+        .join(", ");
+
+      throw new ValidationError(`Validation failed: ${issues}`);
+    }
+
+    return parsed.data;
+  }
+
+  authorize(tool: MCPTool): void {
+    if (!this.canAccess(tool)) {
+      const currentRole = this.context.role as string;
+      throw new PermissionDeniedError(`Role ${currentRole} does not have permission to run ${tool.name}.`);
+    }
+  }
+
+  private canAccess(tool: MCPTool): boolean {
+    if (tool.permissions.length === 0) {
+      return true;
+    }
+
+    const currentRank = this.roleRank(this.context.role as string);
+    return tool.permissions.some((permission) => this.roleRank(permission) <= currentRank);
+  }
+
+  evaluateRisk(tool: MCPTool): void {
+    // Note: HIGH-risk MFA token presence is NOT checked here intentionally.
+    // Checking mfaChallengeToken at this point would short-circuit the approval
+    // creation logic below (lines ~75-101), which must run first so the user is
+    // informed that an approval request has been created and is awaiting admin review.
+    // The MFA token is enforced after approval validation (line ~131 in executeTool).
+    const riskLevel = tool.riskLevel ?? "LOW";
+
+    if (riskLevel === "HIGH" && this.context.role === "VIEWER") {
+      throw new PermissionDeniedError(`Viewers cannot execute high-risk operations.`);
+    }
+  }
+
+
+  async log(entry: AuditLogEntry): Promise<void> {
+    try {
+      if (this.context.prisma?.activityLog) {
+        await this.context.prisma.activityLog.create({
+          data: {
+            action: entry.tool,
+            status: entry.status,
+            details: JSON.stringify({
+              tool: entry.tool,
+              user: entry.user,
+              company: entry.company,
+              duration: entry.duration,
+              errorMessage: entry.errorMessage ? redactAuditText(entry.errorMessage) : undefined,
+              riskLevel: entry.riskLevel,
+              connectedClientId: this.context.connectedClientId ?? null,
+              safeOperationSummary: entry.status === "SUCCESS"
+                ? "Command executed"
+                : entry.status === "PENDING"
+                  ? "Awaiting administrator approval"
+                  : "Command failed",
+            }),
+            userId: this.context.userId,
+            companyId: this.context.companyId,
+          },
+        });
+      }
+    } catch {
+      // Fallback to the provided logger when persistence is unavailable.
+    }
+
+    await this.context.logger(entry);
+  }
+
+  private describeSchema(schema: z.ZodTypeAny): Record<string, unknown> {
+    if (schema instanceof z.ZodObject) {
+      const shape = schema.shape;
+      const properties = Object.fromEntries(Object.entries(shape).map(([key, value]) => {
+        const description = this.describeSchema(value as z.ZodTypeAny);
+        return [key, description];
+      }));
+
+      return {
+        type: "object",
+        properties,
+        required: Object.entries(properties)
+          .filter(([, value]) => !(value as { optional?: boolean }).optional)
+          .map(([key]) => key),
+      };
+    }
+
+    if (schema instanceof z.ZodOptional || schema instanceof z.ZodNullable) {
+      return {
+        ...this.describeSchema((schema as z.ZodOptional<z.ZodTypeAny> | z.ZodNullable<z.ZodTypeAny>).unwrap()),
+        optional: true,
+      };
+    }
+
+    if (schema instanceof z.ZodDefault) {
+      return {
+        ...this.describeSchema((schema as z.ZodDefault<z.ZodTypeAny>).removeDefault()),
+        optional: true,
+      };
+    }
+
+    if (schema instanceof z.ZodArray) {
+      return {
+        type: "array",
+        items: this.describeSchema(schema.element as z.ZodTypeAny),
+      };
+    }
+
+    if (schema instanceof z.ZodString) {
+      return { type: "string" };
+    }
+
+    if (schema instanceof z.ZodNumber) {
+      return { type: "number" };
+    }
+
+    if (schema instanceof z.ZodBoolean) {
+      return { type: "boolean" };
+    }
+
+    if (schema instanceof z.ZodEnum) {
+      return { type: "enum", values: schema.options };
+    }
+
+    if (schema instanceof z.ZodLiteral) {
+      return { type: "literal", value: schema.value };
+    }
+
+    return { type: "unknown" };
+  }
+
+  private recordMetric(duration: number, outcome: "SUCCESS" | "FAILED" | "PENDING"): void {
+    this.metricsState.totalExecutions += 1;
+
+    if (outcome === "SUCCESS") {
+      this.metricsState.successfulExecutions += 1;
+    } else if (outcome === "FAILED") {
+      this.metricsState.failedExecutions += 1;
+    } else {
+      this.metricsState.pendingApprovals += 1;
+    }
+
+    const total = this.metricsState.totalExecutions;
+    const previousTotal = total - 1;
+    const previousAverage = this.metricsState.averageExecutionTime * previousTotal;
+    this.metricsState.averageExecutionTime = (previousAverage + duration) / total;
+    this.metricsState.lastExecution = new Date().toISOString();
+  }
+
+  private roleRank(role: string): number {
+    switch (role) {
+      case Permission.ADMIN:
+        return 4;
+      case Permission.MANAGER:
+        return 3;
+      case Permission.VIEWER:
+      default:
+        return 1;
+    }
+  }
+}

@@ -6,7 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test --test-concurrency=1 tests/api-error-response.test.ts tests/approval.service.test.ts tests/approval-policy.test.ts tests/high-risk-tool-inventory.test.ts tests/auth-error-safety.test.ts tests/auth-registration.test.ts tests/auth-login.test.ts tests/automation-execution-status.test.ts tests/chat-execution-status.test.ts tests/chat-service-errors.test.ts tests/command-parser-safety.test.ts tests/gemini-resilience.test.ts tests/connected-clients.test.ts tests/client-id.test.ts tests/client-selection-enforcement.test.ts tests/inventory-api.test.ts tests/mfa-flow.test.ts tests/mcp-connector.test.ts tests/mcp-registry.test.ts tests/mcp-runtime.test.ts tests/mcp-runtime-outcomes.test.ts tests/ui-background-target.test.ts tests/approval-navigation.test.ts",
+    "test:offline": "node --import tsx --test --test-concurrency=1 tests/api-error-response.test.ts tests/approval.service.test.ts tests/approval-policy.test.ts tests/high-risk-tool-inventory.test.ts tests/auth-error-safety.test.ts tests/auth-registration.test.ts tests/auth-login.test.ts tests/automation-execution-status.test.ts tests/chat-execution-status.test.ts tests/chat-service-errors.test.ts tests/command-parser-safety.test.ts tests/gemini-resilience.test.ts tests/connected-clients.test.ts tests/client-id.test.ts tests/client-selection-enforcement.test.ts tests/inventory-api.test.ts tests/mfa-flow.test.ts tests/mcp-connector.test.ts tests/mcp-registry.test.ts tests/mcp-runtime.test.ts tests/mcp-runtime-outcomes.test.ts tests/ui-background-target.test.ts tests/approval-navigation.test.ts",
+    "test:integration": "node --import tsx --test --test-concurrency=1 tests/approval-security-matrix.test.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "node scripts/bootstrap-admin.js",
+    "bootstrap-admin": "node scripts/bootstrap-admin.js"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
@@ -21,7 +29,9 @@
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^1.16.0",
     "next": "16.2.6",
+    "otplib": "^13.5.0",
     "prisma": "^6.19.3",
+    "qrcode": "^1.5.4",
     "react": "^19",
     "react-dom": "^19",
     "shadcn": "^4.8.0",
@@ -32,10 +42,12 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^24",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "postcss": "^8.5",
     "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.13",
     "typescript": "5.7.3"
   },
   "pnpm": {

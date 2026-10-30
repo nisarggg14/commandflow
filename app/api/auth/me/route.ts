@@ -5,38 +5,25 @@ import { UnauthorizedError, ForbiddenError } from "@/lib/errors";
 
 export async function GET(req: NextRequest) {
   try {
-    // Authenticate the request
-    const authUser = authenticate(req);
-
-    // Fetch the full user from the database
+    const authUser = await authenticate(req);
     const user = await getCurrentUser(authUser.id);
 
-    return NextResponse.json({
-      user,
-    });
-  } 
-  catch (error) {
-  if (error instanceof UnauthorizedError) {
+    return NextResponse.json({ success: true, user });
+  } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      return NextResponse.json({ success: false, message: error.message }, { status: 401 });
+    }
+
+    if (error instanceof ForbiddenError) {
+      return NextResponse.json({ success: false, message: error.message }, { status: 403 });
+    }
+
     return NextResponse.json(
-      { message: error.message },
-      { status: 401 }
+      {
+        success: false,
+        message: "Unable to load the authenticated user. Please try again later.",
+      },
+      { status: 500 }
     );
   }
-
-  if (error instanceof ForbiddenError) {
-    return NextResponse.json(
-      { message: error.message },
-      { status: 403 }
-    );
-  }
-
-  return NextResponse.json(
-    {
-      message:
-        error instanceof Error
-          ? error.message
-          : "Internal Server Error",
-    },
-    { status: 500 }
-  );
 }

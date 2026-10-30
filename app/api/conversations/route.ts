@@ -4,79 +4,39 @@ import {
   createConversation,
   getConversations,
 } from "@/services/conversation.service";
-import { UnauthorizedError, ForbiddenError } from "@/lib/errors";
+import { safeApiErrorResponse } from "@/lib/api-error-response";
 
 export async function POST(req: NextRequest) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
 
     const body = await req.json();
 
     const conversation = await createConversation(
       body,
+      authUser.id,
       authUser.companyId
     );
 
-    return NextResponse.json(conversation, { status: 201 });
+    return NextResponse.json(conversation, {
+      status: 201,
+    });
   } catch (error) {
-    if (error instanceof UnauthorizedError) {
-      return NextResponse.json(
-        { message: error.message },
-        { status: 401 }
-      );
-    }
-
-    if (error instanceof ForbiddenError) {
-      return NextResponse.json(
-        { message: error.message },
-        { status: 403 }
-      );
-    }
-
-    return NextResponse.json(
-      {
-        message:
-          error instanceof Error
-            ? error.message
-            : "Internal Server Error",
-      },
-      { status: 500 }
-    );
+    return safeApiErrorResponse(error, "api.conversations.create", "Unable to create conversation.");
   }
 }
 
 export async function GET(req: NextRequest) {
   try {
-    const authUser = authenticate(req);
+    const authUser = await authenticate(req);
 
-    const conversations = await getConversations(
-      authUser.companyId
-    );
+    const conversations = await getConversations(authUser.companyId, authUser.id);
 
-    return NextResponse.json(conversations);
+    return NextResponse.json({
+      success: true,
+      conversations,
+    });
   } catch (error) {
-    if (error instanceof UnauthorizedError) {
-      return NextResponse.json(
-        { message: error.message },
-        { status: 401 }
-      );
-    }
-
-    if (error instanceof ForbiddenError) {
-      return NextResponse.json(
-        { message: error.message },
-        { status: 403 }
-      );
-    }
-
-    return NextResponse.json(
-      {
-        message:
-          error instanceof Error
-            ? error.message
-            : "Internal Server Error",
-      },
-      { status: 500 }
-    );
+    return safeApiErrorResponse(error, "api.conversations.list", "Unable to load conversations.");
   }
 }

@@ -1,0 +1,33 @@
+import dns from "node:dns/promises";
+import net from "node:net";
+const DNS_LOOKUP_TIMEOUT_MS = 2_000;
+function v4(value: string): number | null { const p=value.split("."); if(p.length!==4||p.some(x=>!/^\d+$/.test(x)||Number(x)>255))return null; return p.reduce((n,x)=>n*256+Number(x),0); }
+function blocked4(value:string):boolean { const n=v4(value); if(n===null)return true; return [[0,0x00ffffff],[0x0a000000,0x0affffff],[0x64400000,0x647fffff],[0x7f000000,0x7fffffff],[0xa9fe0000,0xa9feffff],[0xac100000,0xac1fffff],[0xc0000000,0xc00000ff],[0xc0000200,0xc00002ff],[0xc0a80000,0xc0a8ffff],[0xc6120000,0xc613ffff],[0xe0000000,0xffffffff]].some(([a,b])=>n>=a&&n<=b); }
+function v6(value:string):bigint|null { let s=value.toLowerCase().replace(/^\[|\]$/g,""); if(s.includes("%"))return null; if(s.includes(".")){const i=s.lastIndexOf(":");const n=v4(s.slice(i+1));if(n===null)return null;s=s.slice(0,i)+":"+(n>>>16).toString(16)+":"+(n&65535).toString(16);} const h=s.split("::"); if(h.length>2)return null; const l=h[0]?h[0].split(":"):[],r=h.length===2&&h[1]?h[1].split(":"):[],m=8-l.length-r.length; if(l.concat(r).some(x=>!/^[0-9a-f]{1,4}$/.test(x))||(h.length===1&&m!==0)||m<0)return null; return [...l,...Array(Math.max(0,m)).fill("0"),...r].reduce((n,x)=>(n<<BigInt(16))|BigInt(parseInt(x,16)),BigInt(0)); }
+function blocked(value:string):boolean { const ver=net.isIP(value); if(ver===4)return blocked4(value); if(ver!==6)return true; const n=v6(value); if(n===null)return true; const mask=(b:number)=>((BigInt(1)<<BigInt(b))-BigInt(1))<<BigInt(128-b); const range=(x:bigint,b:number)=>(n&mask(b))===x; if((n>>BigInt(32))===BigInt(0xffff)){const x=Number(n&BigInt(0xffffffff));return blocked4([x>>>24,(x>>>16)&255,(x>>>8)&255,x&255].join("."));} return n===BigInt(0)||n===BigInt(1)||range(BigInt("fc000000000000000000000000000000"),7)||range(BigInt("fe800000000000000000000000000000"),10)||range(BigInt("ff000000000000000000000000000000"),8)||range(BigInt("20010db8000000000000000000000000"),32); }
+export async function assertSafeOutboundUrl(raw:string):Promise<URL>{const url=new URL(raw);if(!["http:","https:"].includes(url.protocol)||url.username||url.password||!url.hostname)throw new Error("Outbound URL is not allowed.");let timer:NodeJS.Timeout|undefined;const lookup=dns.lookup(url.hostname,{all:true,verbatim:true});const timeout=new Promise<never>((_,reject)=>{timer=setTimeout(()=>{const error=new Error("Outbound DNS lookup timed out.");error.name="TimeoutError";reject(error);},DNS_LOOKUP_TIMEOUT_MS);});let addresses:Awaited<typeof lookup>;try{addresses=await Promise.race([lookup,timeout]);}finally{if(timer)clearTimeout(timer);}if(!addresses.length||addresses.some(x=>blocked(x.address)))throw new Error("Outbound destination is not allowed.");return url;}
+
+export function isConfiguredDevelopmentLoopbackUrl(
+  raw: string,
+  configuredBaseUrl: string,
+  environment: string | undefined,
+): boolean {
+  if (environment !== "development") return false;
+
+  try {
+    const url = new URL(raw);
+    const configuredBase = new URL(configuredBaseUrl);
+    const hostname = url.hostname.replace(/^\[|\]$/g, "");
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      !url.username &&
+      !url.password &&
+      url.origin === configuredBase.origin &&
+      (hostname === "localhost" ||
+        hostname === "127.0.0.1" ||
+        hostname === "::1")
+    );
+  } catch {
+    return false;
+  }
+}

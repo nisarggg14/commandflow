@@ -30,19 +30,40 @@ enum ActivityStatus {
   PENDING
 }
 
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELLED
+  EXECUTED
+  EXECUTING
+  FAILED
+}
+
+enum ClientStatus {
+  ACTIVE
+  INACTIVE
+}
+
 model Company {
   id          String   @id @default(cuid())
   name        String
+  normalizedName String @unique
   slug        String   @unique
+  invitationCodeHash String? @unique
   industry    String?
   logo        String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  users         User[]
-  applications  Application[]
-  conversations Conversation[]
-  activityLogs  ActivityLog[]
+  users            User[]
+  applications     Application[]
+  connectedClients ConnectedClient[]
+  conversations    Conversation[]
+  activityLogs     ActivityLog[]
+  approvals        Approval[]
+  automations      Automation[]
 }
 
 model User {
@@ -51,6 +72,13 @@ model User {
   email    String   @unique
   password String
   role     UserRole
+  active   Boolean @default(true)
+
+  mfaEnabled Boolean @default(false)
+  mfaSecret  String?
+  pendingMfaSecret String?
+  pendingMfaExpiresAt DateTime?
+  lastMfaTotpStep BigInt?
 
   companyId String
   company   Company @relation(fields: [companyId], references: [id])
@@ -58,6 +86,12 @@ model User {
   sessions      Session[]
   conversations Conversation[]
   activityLogs  ActivityLog[]
+  mfaChallenges MfaChallenge[]
+  mfaLoginChallenges MfaLoginChallenge[]
+  mfaRecoveryCodes MfaRecoveryCode[]
+  approvalsRequested Approval[] @relation("ApprovalRequester")
+  approvalsReviewed  Approval[] @relation("ApprovalApprover")
+  automationsOwned Automation[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -75,6 +109,15 @@ model Session {
   createdAt DateTime @default(now())
 }
 
+model RateLimitBucket {
+  id String @id
+  key String @unique
+  count Int
+  windowStart DateTime
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+
 model Conversation {
   id String @id @default(cuid())
 
@@ -86,10 +129,18 @@ model Conversation {
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
+  connectedClientId String?
+  connectedClient   ConnectedClient? @relation(fields: [connectedClientId], references: [id], onDelete: SetNull)
+
   messages Message[]
+  approvals Approval[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([connectedClientId])
 }
 
 model Message {
@@ -103,6 +154,62 @@ model Message {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
+
+}
+
+model Automation {
+  id                String   @id @default(cuid())
+  name              String
+  toolName          String
+  argumentsJson     String   @db.Text
+  schedule          String
+  enabled           Boolean  @default(true)
+  lastExecutionKey  String?
+
+  lastExecutionStatus String?
+  lastRunAt         DateTime?
+  companyId         String
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ownerId           String
+  owner             User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  connectedClientId String
+  connectedClient   ConnectedClient @relation(fields: [connectedClientId], references: [id], onDelete: Cascade)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([companyId, name])
+  @@index([companyId, enabled])
+  @@index([connectedClientId])
+}
+
+model ConnectedClient {
+  id          String       @id @default(cuid())
+
+  name        String
+  slug        String
+  description String?
+  status      ClientStatus @default(ACTIVE)
+  baseUrl     String
+  authType    String       @default("BEARER")
+  authConfig  String?      @db.Text
+  lastConnectionTestStatus String?
+  lastConnectionTestAt DateTime?
+  enabledTools String?      @db.Text
+
+  companyId   String
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  conversations Conversation[]
+  activityLogs ActivityLog[]
+  automations Automation[]
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([companyId, slug])
+  @@index([companyId])
+  @@index([status])
+  @@index([slug])
 }
 
 model Application {
@@ -136,5 +243,87 @@ model ActivityLog {
   companyId String
   company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
+  connectedClientId String?
+  connectedClient   ConnectedClient? @relation(fields: [connectedClientId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([connectedClientId])
+}
+
+model MfaChallenge {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  purpose       String
+  riskLevel     String?
+  challengeToken String @unique
+  expiresAt     DateTime
+  verifiedAt    DateTime?
+  createdAt     DateTime @default(now())
+}
+
+model MfaLoginChallenge {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  challengeHash String   @unique
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+model MfaRecoveryCode {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash    String    @unique
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, consumedAt])
+}
+
+model Approval {
+  id String @id @default(cuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  requesterId String
+  requester   User   @relation("ApprovalRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  approverId String?
+  approver   User?  @relation("ApprovalApprover", fields: [approverId], references: [id], onDelete: SetNull)
+
+  toolName            String
+  riskLevel           String
+  purpose             String
+  argumentsHash       String
+  argumentsJson       String? @db.Text
+  originalCommand     String? @db.Text
+  connectedClientId   String?
+  safeArgumentsSummary String @db.Text
+  status              ApprovalStatus @default(PENDING)
+  expiresAt           DateTime
+  createdAt           DateTime @default(now())
+  approvedAt          DateTime?
+  rejectedAt          DateTime?
+  executedAt          DateTime?
+
+  @@index([companyId])
+  @@index([requesterId])
+  @@index([approverId])
+  @@index([conversationId])
+  @@index([connectedClientId])
+  @@index([status])
+  @@index([expiresAt])
 }

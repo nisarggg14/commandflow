@@ -3,36 +3,15 @@ import { createConversationSchema } from "@/validators/conversation.validator";
 
 export async function createConversation(
   data: unknown,
+  userId: string,
   companyId: string
 ) {
   const validatedData = createConversationSchema.parse(data);
 
   return prisma.conversation.create({
     data: {
-      title: validatedData.title ?? "New Conversation",
-      companyId,
-    },
-  });
-}
-
-export async function getConversations(companyId: string) {
-  return prisma.conversation.findMany({
-    where: {
-      companyId,
-    },
-    orderBy: {
-      updatedAt: "desc",
-    },
-  });
-}
-
-export async function getConversationById(
-  id: string,
-  companyId: string
-) {
-  const conversation = await prisma.conversation.findFirst({
-    where: {
-      id,
+      title: validatedData.title || "New Conversation",
+      userId,
       companyId,
     },
     include: {
@@ -43,9 +22,53 @@ export async function getConversationById(
       },
     },
   });
+}
+
+export async function getConversations(companyId: string, userId: string) {
+  const conversations = await prisma.conversation.findMany({
+    where: { companyId, userId },
+    include: {
+      messages: {
+        orderBy: {
+          createdAt: "asc",
+        },
+      },
+    },
+    orderBy: {
+      updatedAt: "desc",
+    },
+  });
+
+  return conversations.map((conversation) => ({
+    ...conversation,
+    messages: conversation.messages.map((message) => ({
+      ...message,
+      role: message.role.toLowerCase() as "user" | "assistant" | "system",
+    })),
+  }));
+}
+
+export async function getConversationById(
+  id: string,
+  companyId: string
+) {
+  const conversation =
+    await prisma.conversation.findFirst({
+      where: {
+        id,
+        companyId,
+      },
+      include: {
+        messages: {
+          orderBy: {
+            createdAt: "asc",
+          },
+        },
+      },
+    });
 
   if (!conversation) {
-    throw new Error("Conversation not found");
+    throw new Error("Conversation not found.");
   }
 
   return conversation;
@@ -55,15 +78,16 @@ export async function deleteConversation(
   id: string,
   companyId: string
 ) {
-  const conversation = await prisma.conversation.findFirst({
-    where: {
-      id,
-      companyId,
-    },
-  });
+  const conversation =
+    await prisma.conversation.findFirst({
+      where: {
+        id,
+        companyId,
+      },
+    });
 
   if (!conversation) {
-    throw new Error("Conversation not found");
+    throw new Error("Conversation not found.");
   }
 
   await prisma.conversation.delete({
@@ -73,6 +97,7 @@ export async function deleteConversation(
   });
 
   return {
-    message: "Conversation deleted successfully",
+    success: true,
+    message: "Conversation deleted successfully.",
   };
 }
